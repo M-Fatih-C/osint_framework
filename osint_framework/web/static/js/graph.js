@@ -47,6 +47,7 @@ class IntelligenceGraph {
     init() {
         const data = { nodes: this.nodes, edges: this.edges };
         this.network = new vis.Network(this.container, data, this.options);
+        this._attachInteractionHandlers();
     }
 
     clear() {
@@ -78,7 +79,7 @@ class IntelligenceGraph {
 
             // Module Node
             const moduleId = `mod_${index}`;
-            this.nodes.add({
+            this._addNode({
                 id: moduleId,
                 label: moduleName.replace('_', ' '),
                 color: { background: '#238636', border: '#1a6327' },
@@ -89,7 +90,7 @@ class IntelligenceGraph {
             // Extract Data points
             if (moduleName === 'GeoIP') {
                 const infoId = `info_${index}`;
-                this.nodes.add({
+                this._addNode({
                     id: infoId,
                     label: `${data.city || 'Unknown'}\n${data.country || ''}`,
                     title: `ISP: ${data.isp}\nLat: ${data.lat}, Lon: ${data.lon}`,
@@ -104,7 +105,7 @@ class IntelligenceGraph {
                 const limit = Math.min(10, subdomains.length);
                 for (let i = 0; i < limit; i++) {
                     const subId = `sub_${index}_${i}`;
-                    this.nodes.add({
+                    this._addNode({
                         id: subId,
                         label: subdomains[i],
                         shape: 'hexagon',
@@ -114,7 +115,7 @@ class IntelligenceGraph {
                     this.edges.add({ from: moduleId, to: subId });
                 }
                 if (subdomains.length > 10) {
-                    this.nodes.add({
+                    this._addNode({
                         id: `sub_${index}_more`,
                         label: `+${subdomains.length - 10} more...`,
                         shape: 'text',
@@ -124,26 +125,76 @@ class IntelligenceGraph {
                 }
             }
             else if (moduleName === 'Username_Checker') {
-                const details = data.details || {};
+                const profiles = Array.isArray(data.profiles) ? data.profiles : [];
                 let count = 0;
-                for (const [platform, status] of Object.entries(details)) {
-                    if (status === 'Found') {
+
+                if (profiles.length > 0) {
+                    const limit = Math.min(15, profiles.length);
+                    for (let i = 0; i < limit; i++) {
+                        const profile = profiles[i] || {};
+                        const platform = profile.site || `Profile ${i + 1}`;
+                        const profileUrl = profile.url || null;
                         const platId = `plat_${index}_${count}`;
-                        this.nodes.add({
+                        this._addNode({
                             id: platId,
                             label: platform,
                             shape: 'ellipse',
-                            color: { background: '#d29922', border: '#9e6a03' }
+                            color: { background: '#d29922', border: '#9e6a03' },
+                            title: profileUrl ? `${platform}\n${profileUrl}` : platform,
+                            url: profileUrl
                         });
                         this.edges.add({ from: moduleId, to: platId });
                         count++;
                     }
+
+                    if (profiles.length > limit) {
+                        const moreId = `plat_${index}_more`;
+                        this._addNode({
+                            id: moreId,
+                            label: `+${profiles.length - limit} more...`,
+                            shape: 'text',
+                            font: { color: '#8b949e' }
+                        });
+                        this.edges.add({ from: moduleId, to: moreId, dashes: true });
+                    }
+                } else {
+                    const details = data.details || {};
+                    for (const [platform, status] of Object.entries(details)) {
+                        if (status === 'Found') {
+                            const platId = `plat_${index}_${count}`;
+                            this._addNode({
+                                id: platId,
+                                label: platform,
+                                shape: 'ellipse',
+                                color: { background: '#d29922', border: '#9e6a03' }
+                            });
+                            this.edges.add({ from: moduleId, to: platId });
+                            count++;
+                        }
+                    }
+                }
+            }
+            else if (moduleName === 'Person_Name_Search_Dorks') {
+                const quickLinks = Array.isArray(data.quick_links) ? data.quick_links : [];
+                const limit = Math.min(6, quickLinks.length);
+                for (let i = 0; i < limit; i++) {
+                    const item = quickLinks[i] || {};
+                    const dorkId = `dork_${index}_${i}`;
+                    this._addNode({
+                        id: dorkId,
+                        label: item.label || `Query ${i + 1}`,
+                        shape: 'box',
+                        color: { background: '#1f6feb', border: '#1158c7' },
+                        title: item.google ? `${item.label}\nClick to open (Google)` : (item.label || ''),
+                        url: item.google || null
+                    });
+                    this.edges.add({ from: moduleId, to: dorkId });
                 }
             }
             // Add other modules here generically
             else {
                 const infoId = `gen_${index}`;
-                this.nodes.add({
+                this._addNode({
                     id: infoId,
                     label: "Data Extracted",
                     shape: 'box'
@@ -154,6 +205,39 @@ class IntelligenceGraph {
 
         // Apply stabilization
         this.network.stabilize();
+    }
+
+    _attachInteractionHandlers() {
+        if (!this.network || !this.container) return;
+
+        this.network.on('click', (params) => {
+            const nodeId = params?.nodes?.[0];
+            if (!nodeId) return;
+            const node = this.nodes.get(nodeId);
+            if (!node || !node.url) return;
+            window.open(node.url, '_blank', 'noopener,noreferrer');
+        });
+
+        this.network.on('hoverNode', (params) => {
+            const node = this.nodes.get(params.node);
+            this.container.style.cursor = node?.url ? 'pointer' : 'default';
+        });
+
+        this.network.on('blurNode', () => {
+            this.container.style.cursor = 'default';
+        });
+    }
+
+    _addNode(node) {
+        const payload = { ...node };
+        if (payload.url) {
+            payload.title = payload.title
+                ? `${payload.title}\nClick to open`
+                : `Click to open\n${payload.url}`;
+            payload.font = { ...(payload.font || {}), color: (payload.font && payload.font.color) || '#ffffff' };
+            if (!payload.shape) payload.shape = 'box';
+        }
+        this.nodes.add(payload);
     }
 }
 
