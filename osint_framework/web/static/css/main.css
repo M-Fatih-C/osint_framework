@@ -353,6 +353,71 @@ body {
     margin-left: 8px;
 }
 
+.links-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 220px;
+}
+
+.links-content {
+    padding: 12px 16px 16px;
+    max-height: 320px;
+    overflow: auto;
+}
+
+.links-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.link-item {
+    border: 1px solid var(--border-color);
+    background: rgba(13, 17, 23, 0.45);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+.link-item-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.link-item-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.link-item-source {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+.result-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.45;
+    word-break: break-all;
+}
+
+.result-link:hover {
+    text-decoration: underline;
+    color: #7ee787;
+}
+
+.links-empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 /* Animations */
 @keyframes spin {
     100% {
@@ -403,6 +468,16 @@ body {
     .terminal-panel,
     .graph-panel {
         min-height: 320px;
+    }
+
+    .links-content {
+        max-height: none;
+    }
+
+    .link-item-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
     }
 
     .progress-container {

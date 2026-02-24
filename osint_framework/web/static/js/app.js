@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // AI Elements
     const generateAiBtn = document.getElementById('generateAiBtn');
     const aiContent = document.getElementById('aiContent');
+    const linksContent = document.getElementById('linksContent');
+    const linksCountBadge = document.getElementById('linksCountBadge');
 
     // State
     let currentJobId = null;
@@ -223,6 +225,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     } catch (e) { console.error(e); }
                 }
 
+                renderDiscoveredLinks(res.results || []);
+
                 if (res.status === 'completed' || res.status === 'error') {
                     finalizeJob(jobId);
                 }
@@ -246,6 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     graph.updateFromResults(res.target, res.target_type, res.results);
                 } catch (e) { console.error(e); }
             }
+            renderDiscoveredLinks(res.results || []);
 
             if (res.status === 'error' && res.error_message) {
                 logTerminal(`[System] ${res.error_message}`, 'error');
@@ -318,6 +323,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         generateAiBtn.classList.add('hidden');
         aiContent.innerHTML = 'Run a scan to generate intelligence. Once completed, you can request an AI summary.';
+        if (linksContent) {
+            linksContent.innerHTML = '<div class="links-empty">Run a scan to collect clickable links from discovered results.</div>';
+        }
+        if (linksCountBadge) {
+            linksCountBadge.textContent = '0';
+            linksCountBadge.classList.add('neutral');
+            linksCountBadge.classList.remove('online');
+        }
     }
 
     function setLoading(isLoading) {
@@ -370,5 +383,140 @@ document.addEventListener('DOMContentLoaded', () => {
             return 'Username target type expects a username/handle (example: fatihcetin), not a full name.';
         }
         return message;
+    }
+
+    function renderDiscoveredLinks(rawResults) {
+        if (!linksContent) return;
+        const links = collectDiscoveredLinks(rawResults);
+
+        if (linksCountBadge) {
+            linksCountBadge.textContent = String(links.length);
+            if (links.length > 0) {
+                linksCountBadge.classList.remove('neutral');
+                linksCountBadge.classList.add('online');
+            } else {
+                linksCountBadge.classList.add('neutral');
+                linksCountBadge.classList.remove('online');
+            }
+        }
+
+        if (links.length === 0) {
+            linksContent.innerHTML = '<div class="links-empty">No clickable links extracted yet. Username (Maigret) and person-name dork modules will appear here automatically.</div>';
+            return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'links-list';
+
+        links.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'link-item';
+
+            const header = document.createElement('div');
+            header.className = 'link-item-header';
+
+            const label = document.createElement('div');
+            label.className = 'link-item-label';
+            label.textContent = item.label || 'Discovered Link';
+
+            const source = document.createElement('div');
+            source.className = 'link-item-source';
+            source.textContent = item.source || 'Unknown source';
+
+            header.appendChild(label);
+            header.appendChild(source);
+
+            const anchor = document.createElement('a');
+            anchor.className = 'result-link';
+            anchor.href = item.url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            anchor.textContent = item.url;
+
+            card.appendChild(header);
+            card.appendChild(anchor);
+            wrapper.appendChild(card);
+        });
+
+        linksContent.innerHTML = '';
+        linksContent.appendChild(wrapper);
+    }
+
+    function collectDiscoveredLinks(rawResults) {
+        const output = [];
+        const seen = new Set();
+        if (!Array.isArray(rawResults)) return output;
+
+        const addLink = (url, label, source) => {
+            if (typeof url !== 'string') return;
+            const normalizedUrl = url.trim();
+            if (!/^https?:\/\//i.test(normalizedUrl)) return;
+            const key = normalizedUrl.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            output.push({ url: normalizedUrl, label, source });
+        };
+
+        for (const item of rawResults) {
+            const moduleName = item?.module || 'Unknown';
+            const data = item?.data || {};
+            if (!data || typeof data !== 'object') continue;
+
+            if (moduleName === 'Username_Checker') {
+                const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+                profiles.forEach(profile => {
+                    addLink(
+                        profile?.url,
+                        profile?.site ? `${profile.site} Profile` : 'Profile',
+                        moduleName
+                    );
+                });
+            }
+
+            if (moduleName === 'Person_Name_Search_Dorks') {
+                const quickLinks = Array.isArray(data.quick_links) ? data.quick_links : [];
+                quickLinks.forEach(entry => {
+                    if (entry?.google) addLink(entry.google, `${entry.label || 'Query'} (Google)`, moduleName);
+                    if (entry?.bing) addLink(entry.bing, `${entry.label || 'Query'} (Bing)`, moduleName);
+                });
+            }
+
+            if (moduleName === 'Subdomain_Scanner') {
+                const subdomains = Array.isArray(data.subdomains) ? data.subdomains : [];
+                subdomains.slice(0, 10).forEach(sub => {
+                    if (typeof sub === 'string' && /^[A-Za-z0-9.-]+$/.test(sub)) {
+                        addLink(`https://${sub}`, `${sub}`, moduleName);
+                    }
+                });
+            }
+
+            // Generic fallback: recursively scan for http(s) URLs in module output.
+            scanObjectForUrls(data, (url) => addLink(url, 'Extracted URL', moduleName));
+        }
+
+        return output.slice(0, 80);
+    }
+
+    function scanObjectForUrls(value, onUrl, seenObjects = new WeakSet()) {
+        if (!value) return;
+
+        if (typeof value === 'string') {
+            const urlMatches = value.match(/https?:\/\/[^\s"'<>]+/g);
+            if (urlMatches) {
+                urlMatches.forEach(onUrl);
+            }
+            return;
+        }
+
+        if (typeof value !== 'object') return;
+        if (seenObjects.has(value)) return;
+        seenObjects.add(value);
+
+        if (Array.isArray(value)) {
+            value.forEach(item => scanObjectForUrls(item, onUrl, seenObjects));
+            return;
+        }
+
+        Object.values(value).forEach(item => scanObjectForUrls(item, onUrl, seenObjects));
     }
 });
