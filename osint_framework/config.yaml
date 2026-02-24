@@ -1,0 +1,67 @@
+engine:
+  threads: 20
+  timeout: 15
+  retries: 3
+
+cache:
+  enabled: true
+  type: in_memory
+  url: redis://localhost:6379/0
+  ttl: "24h"
+
+database:
+  url: sqlite+aiosqlite:///./osintdb.db
+
+proxy:
+  enabled: false
+  rotation: round_robin
+  list_file: proxies.txt
+  types:
+    - http
+    - socks5
+
+api:
+  rate_limit: "100/minute"
+  port: 8000
+  host: 0.0.0.0
+
+security:
+  enabled: false
+  api_keys: []
+  api_key_header: X-API-Key
+  protect_read_endpoints: false
+  exempt_paths:
+    - /
+    - /docs
+    - /redoc
+    - /openapi.json
+    - /static
+    - /api/v1/auth/token
+  trust_x_forwarded_for: false
+  audit_logging: true
+  jwt:
+    enabled: false
+    secret: null
+    algorithm: HS256
+    issuer: osint_framework
+    access_token_ttl_minutes: 60
+    rbac_enabled: false
+    users: []
+
+logging:
+  level: INFO
+  file: osint_framework.log
+
+integrations:
+  maigret:
+    enabled: true
+    command: null
+    top_sites: 50
+    timeout: 12
+    retries: 1
+    json_report_type: simple
+    all_sites: false
+    no_progressbar: true
+    no_color: true
+    no_recursion: true
+    no_extracting: true

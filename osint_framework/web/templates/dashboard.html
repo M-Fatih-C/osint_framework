@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSINT Framework - Dashboard</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="logo">
+                <div class="logo-icon">🔍</div>
+                <h1>OSINT<span>Core</span></h1>
+            </div>
+            
+            <div class="scan-form">
+                <h3>New Investigation</h3>
+                <form id="scanForm">
+                    <div class="input-group">
+                        <label for="targetType">Target Type</label>
+                        <select id="targetType" required>
+                            <option value="domain">Domain</option>
+                            <option value="ip">IP Address</option>
+                            <option value="email">Email</option>
+                            <option value="person_name">Person Name</option>
+                            <option value="username">Username</option>
+                            <option value="phone">Phone</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label for="targetInput">Target</label>
+                        <input type="text" id="targetInput" placeholder="e.g. example.com" required autocomplete="off">
+                        <small class="input-help" id="targetHint">For username scans, enter a handle (no spaces), not a full name.</small>
+                    </div>
+                    <button type="submit" class="btn-primary" id="startBtn">
+                        <span class="btn-text">Initiate Scan</span>
+                        <div class="spinner hidden" id="btnSpinner"></div>
+                    </button>
+                </form>
+            </div>
+
+            <div class="system-status">
+                <h3>System Status</h3>
+                <div class="status-item">
+                    <span>Engine</span>
+                    <span class="badge online">Online</span>
+                </div>
+                <div class="status-item">
+                    <span>Active Jobs</span>
+                    <span class="badge neutral" id="activeJobsBadge">0</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Topbar Context -->
+            <header class="topbar glass-panel">
+                <div class="current-target">
+                    <h2>Target: <span id="displayTarget" class="glow-text">None</span></h2>
+                    <span class="job-id" id="displayJobId">Awaiting Scan...</span>
+                </div>
+                <div class="progress-container hidden" id="progressContainer">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <span class="progress-text" id="progressText">0 / 0 Modules</span>
+                </div>
+            </header>
+
+            <!-- Dashboard Grid -->
+            <div class="dashboard-grid">
+                <!-- Live Terminal Feed -->
+                <div class="terminal-panel glass-panel">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-terminal"></i> Live Stream</h3>
+                    </div>
+                    <div class="terminal-output" id="terminalOutput">
+                        <div class="term-line system">System initialized. Waiting for task...</div>
+                    </div>
+                </div>
+
+                <!-- Vis.js Graph Wrapper -->
+                <div class="graph-panel glass-panel">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-project-diagram"></i> Intelligence Graph</h3>
+                    </div>
+                    <div id="networkGraph" class="network-container"></div>
+                </div>
+
+                <!-- AI Executive Summary -->
+                <div class="ai-panel glass-panel full-width">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-robot"></i> AI Executive Summary <span class="badge ai-badge">Ollama</span></h3>
+                        <button class="btn-secondary hidden" id="generateAiBtn">Generate Summary</button>
+                    </div>
+                    <div class="ai-content default-text" id="aiContent">
+                        Run a scan to generate intelligence. Once completed, you can request an AI summary.
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals & Scripts -->
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/ws.js"></script>
+    <script src="/static/js/graph.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
