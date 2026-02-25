@@ -13,7 +13,15 @@ class WSService {
 
         this.socket.onopen = () => {
             console.log("WebSocket Connected");
-            this.notifyHandlers({ type: 'sys_connect' });
+            this.notifyHandlers({
+                type: 'sys_connect',
+                _event_meta: {
+                    transport: 'websocket_control',
+                    source: 'browser_ws_client',
+                    ws_client_id: this.clientId,
+                    client_received_at_ms: Date.now()
+                }
+            });
         };
 
         this.socket.onmessage = (event) => {
@@ -27,7 +35,15 @@ class WSService {
 
         this.socket.onclose = () => {
             console.log("WebSocket Disconnected. Reconnecting in 5s...");
-            this.notifyHandlers({ type: 'sys_disconnect' });
+            this.notifyHandlers({
+                type: 'sys_disconnect',
+                _event_meta: {
+                    transport: 'websocket_control',
+                    source: 'browser_ws_client',
+                    ws_client_id: this.clientId,
+                    client_received_at_ms: Date.now()
+                }
+            });
             setTimeout(() => this.connect(), 5000);
         };
     }

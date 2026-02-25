@@ -21,6 +21,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const displayCaseContext = document.getElementById('displayCaseContext');
     const terminalOutput = document.getElementById('terminalOutput');
     const activeJobsBadge = document.getElementById('activeJobsBadge');
+    const queueModeBadgeSide = document.getElementById('queueModeBadgeSide');
+    const queueDepthBadgeSide = document.getElementById('queueDepthBadgeSide');
+    const wsStatusBadgeSide = document.getElementById('wsStatusBadgeSide');
+    const queueModeBadgeTop = document.getElementById('queueModeBadgeTop');
+    const queueDepthBadgeTop = document.getElementById('queueDepthBadgeTop');
+    const wsStatusBadgeTop = document.getElementById('wsStatusBadgeTop');
+    const eventSourceBadgeTop = document.getElementById('eventSourceBadgeTop');
 
     const progressContainer = document.getElementById('progressContainer');
     const progressFill = document.getElementById('progressFill');
@@ -33,6 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const linksCountBadge = document.getElementById('linksCountBadge');
     const caseDetailsContent = document.getElementById('caseDetailsContent');
     const casePanelStatus = document.getElementById('casePanelStatus');
+    const eventDebugSummary = document.getElementById('eventDebugSummary');
+    const eventDebugStream = document.getElementById('eventDebugStream');
+    const eventDebugTransportBadge = document.getElementById('eventDebugTransportBadge');
 
     // State
     let currentJobId = null;
@@ -43,6 +53,16 @@ document.addEventListener('DOMContentLoaded', () => {
     let caseList = [];
     let caseDetails = null;
     let caseLoadInFlight = false;
+    const eventTelemetry = {
+        wsState: 'disconnected',
+        queueMode: 'unknown',
+        queuePending: null,
+        queueProcessing: null,
+        totalEvents: 0,
+        lastEvent: null,
+        recent: [],
+        wsClientId: (window.WSService && window.WSService.clientId) ? window.WSService.clientId : null
+    };
 
     const TARGET_INPUT_META = {
         domain: {
@@ -146,6 +166,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
         populateTargetTypes();
         applyTargetInputMeta();
+        renderEventDebugPanel();
+        syncStatusBadges();
         targetType?.addEventListener('change', applyTargetInputMeta);
         targetInput?.addEventListener('input', () => targetInput.setCustomValidity(''));
         caseSelect?.addEventListener('change', async () => {
@@ -170,8 +192,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 4. Handlers
     function handleSocketMessage(msg) {
+        recordEventTelemetry(msg);
         if (msg.type === 'sys_connect') {
+            setWsConnectionState('connected');
             logTerminal('[System] WebSocket Real-Time connection established.', 'success');
+            renderEventDebugPanel();
         } else if (msg.type === 'job_update' && msg.job_id === currentJobId) {
             logTerminal(`[Scan] Status updated to: ${msg.status}`, 'info');
             if (msg.error) {
@@ -188,6 +213,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 progressFill.style.width = `${percent}%`;
                 progressText.textContent = `${msg.modules_done} / ${msg.modules_total} Modules`;
             }
+        } else if (msg.type === 'sys_disconnect') {
+            setWsConnectionState('disconnected');
+            logTerminal('[System] WebSocket disconnected. Auto-reconnect scheduled.', 'error');
+            renderEventDebugPanel();
         }
     }
 
@@ -202,6 +231,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 activeJobsBadge.classList.add('neutral');
                 activeJobsBadge.classList.remove('online');
             }
+            eventTelemetry.queueMode = String(stats.queue_mode || 'in_process');
+            eventTelemetry.queuePending = Number.isFinite(stats.queue_pending) ? stats.queue_pending : null;
+            eventTelemetry.queueProcessing = Number.isFinite(stats.queue_processing) ? stats.queue_processing : null;
+            syncStatusBadges();
+            renderEventDebugPanel();
         }
     }
 
@@ -376,6 +410,166 @@ document.addEventListener('DOMContentLoaded', () => {
             linksCountBadge.classList.add('neutral');
             linksCountBadge.classList.remove('online');
         }
+    }
+
+    function setWsConnectionState(state) {
+        eventTelemetry.wsState = state === 'connected' ? 'connected' : 'disconnected';
+        if (eventDebugTransportBadge) {
+            toggleOnlineClass(eventDebugTransportBadge, eventTelemetry.wsState === 'connected');
+        }
+        syncStatusBadges();
+    }
+
+    function syncStatusBadges() {
+        const queueModeText = eventTelemetry.queueMode || 'unknown';
+        const queueDepthText = `${Number.isFinite(eventTelemetry.queuePending) ? eventTelemetry.queuePending : 0} / ${Number.isFinite(eventTelemetry.queueProcessing) ? eventTelemetry.queueProcessing : 0}`;
+        const wsText = eventTelemetry.wsState === 'connected' ? 'Connected' : 'Disconnected';
+        const lastSource = eventTelemetry.lastEvent?.source ? shortenSource(eventTelemetry.lastEvent.source) : '-';
+
+        [queueModeBadgeTop, queueModeBadgeSide].forEach(el => {
+            if (!el) return;
+            el.textContent = queueModeText;
+            toggleOnlineClass(el, queueModeText && queueModeText !== 'unknown');
+        });
+        [queueDepthBadgeTop, queueDepthBadgeSide].forEach(el => {
+            if (!el) return;
+            el.textContent = queueDepthText;
+            const hasWork = (eventTelemetry.queuePending || 0) > 0 || (eventTelemetry.queueProcessing || 0) > 0;
+            toggleOnlineClass(el, hasWork);
+        });
+        [wsStatusBadgeTop, wsStatusBadgeSide].forEach(el => {
+            if (!el) return;
+            el.textContent = wsText;
+            toggleOnlineClass(el, eventTelemetry.wsState === 'connected');
+        });
+        if (eventSourceBadgeTop) {
+            eventSourceBadgeTop.textContent = lastSource;
+        }
+    }
+
+    function toggleOnlineClass(el, isOnline) {
+        el.classList.toggle('online', !!isOnline);
+        el.classList.toggle('neutral', !isOnline);
+    }
+
+    function recordEventTelemetry(msg) {
+        if (!msg || typeof msg !== 'object') return;
+        const nowMs = Date.now();
+        const meta = (msg._event_meta && typeof msg._event_meta === 'object') ? msg._event_meta : {};
+        const sentAtMs = Number.isFinite(meta.sent_at_ms) ? meta.sent_at_ms : null;
+        const latencyMs = sentAtMs ? Math.max(0, nowMs - sentAtMs) : null;
+        const eventEntry = {
+            type: String(msg.type || 'unknown'),
+            status: msg.status ? String(msg.status) : null,
+            module: msg.module ? String(msg.module) : null,
+            jobId: msg.job_id ? String(msg.job_id) : null,
+            source: meta.source ? String(meta.source) : null,
+            transport: meta.transport ? String(meta.transport) : 'ws_direct',
+            bridgeInstance: meta.bridge_instance ? String(meta.bridge_instance) : null,
+            channel: meta.channel ? String(meta.channel) : null,
+            sentAtMs,
+            receivedAtMs: nowMs,
+            bridgeDelayMs: Number.isFinite(meta.bridge_delay_ms) ? meta.bridge_delay_ms : null,
+            latencyMs
+        };
+
+        eventTelemetry.totalEvents += 1;
+        eventTelemetry.lastEvent = eventEntry;
+        eventTelemetry.recent.unshift(eventEntry);
+        if (eventTelemetry.recent.length > 24) {
+            eventTelemetry.recent.length = 24;
+        }
+
+        if (eventDebugTransportBadge) {
+            eventDebugTransportBadge.textContent = eventEntry.transport || 'unknown';
+            toggleOnlineClass(eventDebugTransportBadge, eventTelemetry.wsState === 'connected');
+        }
+        syncStatusBadges();
+        renderEventDebugPanel();
+    }
+
+    function renderEventDebugPanel() {
+        if (!eventDebugSummary || !eventDebugStream) return;
+
+        const last = eventTelemetry.lastEvent;
+        const queueMode = eventTelemetry.queueMode || 'unknown';
+        const queueDepth = `${Number.isFinite(eventTelemetry.queuePending) ? eventTelemetry.queuePending : 0} pending / ${Number.isFinite(eventTelemetry.queueProcessing) ? eventTelemetry.queueProcessing : 0} processing`;
+        const summaryRows = [
+            ['WS State', eventTelemetry.wsState === 'connected' ? 'Connected' : 'Disconnected'],
+            ['Queue Mode', queueMode],
+            ['Queue Depth', queueDepth],
+            ['WS Client', eventTelemetry.wsClientId || 'n/a'],
+            ['Events Seen', String(eventTelemetry.totalEvents)],
+            ['Last Event', last ? `${last.type}${last.status ? ` · ${last.status}` : ''}` : 'n/a'],
+            ['Last Source', last?.source || 'n/a'],
+            ['Last Transport', last?.transport || 'n/a'],
+            ['End-to-End Latency', formatLatency(last?.latencyMs)],
+            ['Bridge Delay', formatLatency(last?.bridgeDelayMs)],
+            ['Bridge Instance', last?.bridgeInstance || 'n/a'],
+            ['Redis Channel', last?.channel || 'n/a']
+        ];
+
+        eventDebugSummary.innerHTML = `
+            <div class="debug-summary-grid">
+                ${summaryRows.map(([label, value]) => `
+                    <div class="debug-stat">
+                        <div class="debug-stat-label">${escapeHtml(label)}</div>
+                        <div class="debug-stat-value ${label.includes('Latency') || label.includes('Client') || label.includes('Source') || label.includes('Instance') || label.includes('Channel') ? 'mono' : ''}">${escapeHtml(value)}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        if (!eventTelemetry.recent.length) {
+            eventDebugStream.innerHTML = '<div class="debug-empty">No event telemetry received yet.</div>';
+            return;
+        }
+
+        eventDebugStream.innerHTML = eventTelemetry.recent.map((entry, index) => `
+            <div class="debug-row ${index === 0 ? 'latest' : ''}">
+                <div class="debug-row-main">
+                    <span class="debug-row-type">${escapeHtml(entry.type)}</span>
+                    ${entry.status ? `<span class="debug-row-pill">${escapeHtml(entry.status)}</span>` : ''}
+                    ${entry.module ? `<span class="debug-row-pill muted">${escapeHtml(entry.module)}</span>` : ''}
+                    ${entry.jobId ? `<span class="debug-row-pill mono">${escapeHtml(trimMiddle(entry.jobId, 20))}</span>` : ''}
+                </div>
+                <div class="debug-row-meta">
+                    <span>${escapeHtml(entry.transport || 'ws_direct')}</span>
+                    <span class="mono">${escapeHtml(shortenSource(entry.source || 'n/a', 30))}</span>
+                    <span>${escapeHtml(formatLatency(entry.latencyMs))}</span>
+                    <span class="mono">${escapeHtml(formatEventTime(entry.receivedAtMs))}</span>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function formatLatency(value) {
+        if (!Number.isFinite(value)) return 'n/a';
+        return `${Math.round(value)} ms`;
+    }
+
+    function formatEventTime(epochMs) {
+        if (!Number.isFinite(epochMs)) return 'n/a';
+        try {
+            return new Date(epochMs).toLocaleTimeString([], { hour12: false });
+        } catch (_) {
+            return 'n/a';
+        }
+    }
+
+    function shortenSource(value, maxLen = 18) {
+        if (!value) return '-';
+        const str = String(value);
+        if (str.length <= maxLen) return str;
+        return `${str.slice(0, Math.max(6, maxLen - 9))}...${str.slice(-6)}`;
+    }
+
+    function trimMiddle(value, maxLen = 24) {
+        const str = String(value || '');
+        if (str.length <= maxLen) return str;
+        const head = Math.ceil((maxLen - 3) / 2);
+        const tail = Math.floor((maxLen - 3) / 2);
+        return `${str.slice(0, head)}...${str.slice(-tail)}`;
     }
 
     function setLoading(isLoading) {

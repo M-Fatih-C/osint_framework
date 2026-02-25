@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Optional
 
 from osint_framework.api.ws import ws_manager
@@ -18,7 +19,30 @@ class RedisWebSocketBridge:
         return (settings.queue.mode or "").lower() == "redis"
 
     async def _handle_event(self, event, envelope):
-        await ws_manager.broadcast(event)
+        forwarded_event = dict(event or {})
+        sent_at_ms = envelope.get("sent_at_ms")
+        now_ms = int(time.time() * 1000)
+        try:
+            sent_int = int(sent_at_ms) if sent_at_ms is not None else None
+        except Exception:
+            sent_int = None
+
+        existing_meta = forwarded_event.get("_event_meta")
+        meta = dict(existing_meta) if isinstance(existing_meta, dict) else {}
+        meta.update(
+            {
+                "transport": "redis_pubsub",
+                "source": envelope.get("source"),
+                "channel": self.event_bus.channel,
+                "sent_at_ms": sent_int,
+                "bridge_received_at_ms": now_ms,
+                "bridge_instance": self.event_bus.instance_id,
+            }
+        )
+        if sent_int is not None:
+            meta["bridge_delay_ms"] = max(0, now_ms - sent_int)
+        forwarded_event["_event_meta"] = {k: v for k, v in meta.items() if v is not None}
+        await ws_manager.broadcast(forwarded_event)
 
     async def start(self):
         if not self.enabled:

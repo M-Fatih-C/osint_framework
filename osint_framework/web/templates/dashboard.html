@@ -3,160 +3,223 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OSINT Framework - Dashboard</title>
+    <title>OSINT Core - Intelligence Control Room</title>
     <link rel="stylesheet" href="/static/css/main.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
 </head>
 <body>
-    <div class="app-container">
-        <!-- Sidebar -->
-        <aside class="sidebar glass-panel">
-            <div class="logo">
-                <div class="logo-icon">🔍</div>
-                <h1>OSINT<span>Core</span></h1>
-            </div>
-            
-            <div class="scan-form">
-                <h3>New Investigation</h3>
-                <form id="scanForm">
-                    <div class="input-group">
-                        <label for="targetType">Target Type</label>
-                        <select id="targetType" required>
-                            <option value="domain">Domain</option>
-                            <option value="ip">IP Address</option>
-                            <option value="email">Email</option>
-                            <option value="person_name">Person Name</option>
-                            <option value="username">Username</option>
-                            <option value="phone">Phone</option>
-                        </select>
-                    </div>
-                    <div class="input-group">
-                        <label for="targetInput">Target</label>
-                        <input type="text" id="targetInput" placeholder="e.g. example.com" required autocomplete="off">
-                        <small class="input-help" id="targetHint">For username scans, enter a handle (no spaces), not a full name.</small>
-                    </div>
-                    <div class="input-group">
-                        <div class="label-inline">
-                            <label for="caseSelect">Case (Optional)</label>
-                            <button type="button" class="btn-link-inline" id="refreshCasesBtn">Refresh</button>
-                        </div>
-                        <select id="caseSelect">
-                            <option value="">Ad-hoc (No Case)</option>
-                        </select>
-                        <small class="input-help" id="caseHint">Attach this scan to a case for grouped history, notes, and pivots.</small>
-                    </div>
-                    <div class="quick-case-panel">
-                        <div class="quick-case-header">
-                            <span>Quick Case Create</span>
-                            <span class="badge neutral" id="casesCountBadge">0</span>
-                        </div>
-                        <div class="input-group compact">
-                            <label for="caseTitleInput">Case Title</label>
-                            <input type="text" id="caseTitleInput" placeholder="e.g. Client A - Credential Exposure" maxlength="200" autocomplete="off">
-                        </div>
-                        <div class="input-group compact">
-                            <label for="caseTagsInput">Tags (comma separated)</label>
-                            <input type="text" id="caseTagsInput" placeholder="client-a, leak, priority-high" maxlength="400" autocomplete="off">
-                        </div>
-                        <button type="button" class="btn-secondary btn-small" id="createCaseBtn">Create & Select Case</button>
-                        <div class="inline-status" id="caseCreateStatus">No case selected. Scans will run ad-hoc.</div>
-                    </div>
-                    <button type="submit" class="btn-primary" id="startBtn">
-                        <span class="btn-text">Initiate Scan</span>
-                        <div class="spinner hidden" id="btnSpinner"></div>
-                    </button>
-                </form>
-            </div>
-
-            <div class="system-status">
-                <h3>System Status</h3>
-                <div class="status-item">
-                    <span>Engine</span>
-                    <span class="badge online">Online</span>
-                </div>
-                <div class="status-item">
-                    <span>Active Jobs</span>
-                    <span class="badge neutral" id="activeJobsBadge">0</span>
-                </div>
-            </div>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Topbar Context -->
-            <header class="topbar glass-panel">
-                <div class="current-target">
-                    <h2>Target: <span id="displayTarget" class="glow-text">None</span></h2>
-                    <span class="job-id" id="displayJobId">Awaiting Scan...</span>
-                    <span class="job-id hidden" id="displayCaseContext">Case: Ad-hoc</span>
-                </div>
-                <div class="progress-container hidden" id="progressContainer">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progressFill"></div>
-                    </div>
-                    <span class="progress-text" id="progressText">0 / 0 Modules</span>
-                </div>
-            </header>
-
-            <!-- Dashboard Grid -->
-            <div class="dashboard-grid">
-                <!-- Live Terminal Feed -->
-                <div class="terminal-panel glass-panel">
-                    <div class="panel-header">
-                        <h3><i class="fas fa-terminal"></i> Live Stream</h3>
-                    </div>
-                    <div class="terminal-output" id="terminalOutput">
-                        <div class="term-line system">System initialized. Waiting for task...</div>
-                    </div>
-                </div>
-
-                <!-- Vis.js Graph Wrapper -->
-                <div class="graph-panel glass-panel">
-                    <div class="panel-header">
-                        <h3><i class="fas fa-project-diagram"></i> Intelligence Graph</h3>
-                    </div>
-                    <div id="networkGraph" class="network-container"></div>
-                </div>
-
-                <!-- AI Executive Summary -->
-                <div class="ai-panel glass-panel full-width">
-                    <div class="panel-header">
-                        <h3><i class="fas fa-robot"></i> AI Executive Summary <span class="badge ai-badge">Ollama</span></h3>
-                        <button class="btn-secondary hidden" id="generateAiBtn">Generate Summary</button>
-                    </div>
-                    <div class="ai-content default-text" id="aiContent">
-                        Run a scan to generate intelligence. Once completed, you can request an AI summary.
-                    </div>
-                </div>
-
-                <!-- Clickable Result Links -->
-                <div class="links-panel glass-panel full-width">
-                    <div class="panel-header">
-                        <h3><i class="fas fa-link"></i> Discovered Links</h3>
-                        <span class="badge neutral" id="linksCountBadge">0</span>
-                    </div>
-                    <div class="links-content default-text" id="linksContent">
-                        Run a scan to collect clickable links from discovered results.
-                    </div>
-                </div>
-
-                <!-- Case Details -->
-                <div class="case-panel glass-panel full-width">
-                    <div class="panel-header">
-                        <h3><i class="fas fa-folder-open"></i> Case Workspace</h3>
-                        <span class="badge neutral" id="casePanelStatus">No Case</span>
-                    </div>
-                    <div class="case-content default-text" id="caseDetailsContent">
-                        Select a case to view tracked targets, recent jobs, and analyst notes.
-                    </div>
-                </div>
-            </div>
-        </main>
+    <div class="ambient-bg" aria-hidden="true">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="bg-grid"></div>
     </div>
 
-    <!-- Modals & Scripts -->
+    <div class="app-shell">
+        <div class="app-container">
+            <aside class="sidebar glass-panel">
+                <div class="logo">
+                    <div class="logo-icon">◉</div>
+                    <div>
+                        <h1>OSINT<span>Core</span></h1>
+                        <p class="logo-tag">Intelligence Control Room</p>
+                    </div>
+                </div>
+
+                <div class="scan-form">
+                    <h3>New Investigation</h3>
+                    <form id="scanForm">
+                        <div class="input-group">
+                            <label for="targetType">Target Type</label>
+                            <select id="targetType" required>
+                                <option value="domain">Domain</option>
+                                <option value="ip">IP Address</option>
+                                <option value="email">Email</option>
+                                <option value="person_name">Person Name</option>
+                                <option value="username">Username</option>
+                                <option value="phone">Phone</option>
+                            </select>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="targetInput">Target</label>
+                            <input type="text" id="targetInput" placeholder="e.g. example.com" required autocomplete="off">
+                            <small class="input-help" id="targetHint">For username scans, enter a handle (no spaces), not a full name.</small>
+                        </div>
+
+                        <div class="input-group">
+                            <div class="label-inline">
+                                <label for="caseSelect">Case (Optional)</label>
+                                <button type="button" class="btn-link-inline" id="refreshCasesBtn">Refresh</button>
+                            </div>
+                            <select id="caseSelect">
+                                <option value="">Ad-hoc (No Case)</option>
+                            </select>
+                            <small class="input-help" id="caseHint">Attach this scan to a case for grouped history, notes, and pivots.</small>
+                        </div>
+
+                        <div class="quick-case-panel">
+                            <div class="quick-case-header">
+                                <span>Quick Case Create</span>
+                                <span class="badge neutral" id="casesCountBadge">0</span>
+                            </div>
+
+                            <div class="input-group compact">
+                                <label for="caseTitleInput">Case Title</label>
+                                <input type="text" id="caseTitleInput" placeholder="e.g. Client A - Credential Exposure" maxlength="200" autocomplete="off">
+                            </div>
+
+                            <div class="input-group compact">
+                                <label for="caseTagsInput">Tags (comma separated)</label>
+                                <input type="text" id="caseTagsInput" placeholder="client-a, leak, priority-high" maxlength="400" autocomplete="off">
+                            </div>
+
+                            <button type="button" class="btn-secondary btn-small" id="createCaseBtn">Create & Select Case</button>
+                            <div class="inline-status" id="caseCreateStatus">No case selected. Scans will run ad-hoc.</div>
+                        </div>
+
+                        <button type="submit" class="btn-primary" id="startBtn">
+                            <span class="btn-text">Initiate Scan</span>
+                            <div class="spinner hidden" id="btnSpinner"></div>
+                        </button>
+                    </form>
+                </div>
+
+                <div class="system-status">
+                    <h3>System Status</h3>
+                    <div class="status-item">
+                        <span>Engine</span>
+                        <span class="badge online">Online</span>
+                    </div>
+                    <div class="status-item">
+                        <span>Active Jobs</span>
+                        <span class="badge neutral" id="activeJobsBadge">0</span>
+                    </div>
+                    <div class="status-item">
+                        <span>Queue Mode</span>
+                        <span class="badge neutral" id="queueModeBadgeSide">-</span>
+                    </div>
+                    <div class="status-item">
+                        <span>Queue Depth</span>
+                        <span class="badge neutral" id="queueDepthBadgeSide">0 / 0</span>
+                    </div>
+                    <div class="status-item">
+                        <span>WebSocket</span>
+                        <span class="badge neutral" id="wsStatusBadgeSide">Disconnected</span>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="main-content">
+                <header class="topbar glass-panel">
+                    <div class="topbar-stack">
+                        <div class="eyebrow">Active Investigation Context</div>
+                        <div class="current-target">
+                            <h2>Target: <span id="displayTarget" class="glow-text">None</span></h2>
+                            <span class="job-id" id="displayJobId">Awaiting Scan...</span>
+                            <span class="job-id hidden" id="displayCaseContext">Case: Ad-hoc</span>
+                        </div>
+                    </div>
+
+                    <div class="topbar-right">
+                        <div class="metric-pills">
+                            <div class="metric-pill">
+                                <span class="metric-label">Queue</span>
+                                <span class="metric-value" id="queueModeBadgeTop">-</span>
+                            </div>
+                            <div class="metric-pill">
+                                <span class="metric-label">Depth</span>
+                                <span class="metric-value" id="queueDepthBadgeTop">0 / 0</span>
+                            </div>
+                            <div class="metric-pill">
+                                <span class="metric-label">WS</span>
+                                <span class="metric-value" id="wsStatusBadgeTop">Disconnected</span>
+                            </div>
+                            <div class="metric-pill">
+                                <span class="metric-label">Last Source</span>
+                                <span class="metric-value mono" id="eventSourceBadgeTop">-</span>
+                            </div>
+                        </div>
+
+                        <div class="progress-container hidden" id="progressContainer">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                            <span class="progress-text" id="progressText">0 / 0 Modules</span>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="dashboard-grid">
+                    <div class="terminal-panel glass-panel">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-terminal"></i> Live Stream</h3>
+                            <span class="panel-subtitle">Runtime events and analyst log</span>
+                        </div>
+                        <div class="terminal-output" id="terminalOutput">
+                            <div class="term-line system">System initialized. Waiting for task...</div>
+                        </div>
+                    </div>
+
+                    <div class="graph-panel glass-panel">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-project-diagram"></i> Intelligence Graph</h3>
+                            <span class="panel-subtitle">Click nodes with URLs to open sources</span>
+                        </div>
+                        <div id="networkGraph" class="network-container"></div>
+                    </div>
+
+                    <div class="ai-panel glass-panel full-width">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-robot"></i> AI Executive Summary <span class="badge ai-badge">Ollama</span></h3>
+                            <button class="btn-secondary hidden" id="generateAiBtn">Generate Summary</button>
+                        </div>
+                        <div class="ai-content default-text" id="aiContent">
+                            Run a scan to generate intelligence. Once completed, you can request an AI summary.
+                        </div>
+                    </div>
+
+                    <div class="links-panel glass-panel full-width">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-link"></i> Discovered Links</h3>
+                            <span class="badge neutral" id="linksCountBadge">0</span>
+                        </div>
+                        <div class="links-content default-text" id="linksContent">
+                            Run a scan to collect clickable links from discovered results.
+                        </div>
+                    </div>
+
+                    <div class="case-panel glass-panel full-width">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-folder-open"></i> Case Workspace</h3>
+                            <span class="badge neutral" id="casePanelStatus">No Case</span>
+                        </div>
+                        <div class="case-content default-text" id="caseDetailsContent">
+                            Select a case to view tracked targets, recent jobs, and analyst notes.
+                        </div>
+                    </div>
+
+                    <div class="debug-panel glass-panel full-width">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-broadcast-tower"></i> Event Bus Telemetry</h3>
+                            <span class="badge neutral" id="eventDebugTransportBadge">idle</span>
+                        </div>
+                        <div class="debug-content">
+                            <div class="debug-summary" id="eventDebugSummary">
+                                <div class="debug-empty">Waiting for WebSocket / Redis pub-sub events...</div>
+                            </div>
+                            <div class="debug-stream" id="eventDebugStream">
+                                <div class="debug-empty">No event telemetry received yet.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
     <script src="/static/js/api.js"></script>
     <script src="/static/js/ws.js"></script>
     <script src="/static/js/graph.js"></script>
