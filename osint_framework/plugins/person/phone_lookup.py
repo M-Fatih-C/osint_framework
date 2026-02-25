@@ -3,17 +3,12 @@ import re
 from typing import Dict
 
 from osint_framework.core.logger import logger
+from osint_framework.core.provider_models import ProviderResult
 from osint_framework.plugins.base import BaseModule
 
 
-class PhoneLookupModule(BaseModule):
-    name = "Phone_Lookup"
-    version = "1.0.0"
-    description = "Performs basic phone format analysis and optional Numverify enrichment."
-    target_types = ["phone"]
-    author = "OSINT_Framework_Team"
-    timeout = 10
-
+class LocalPhoneAnalysisProvider:
+    name = "local-phone-analysis"
     COUNTRY_HINTS = {
         "1": "North America",
         "44": "United Kingdom",
@@ -42,7 +37,7 @@ class PhoneLookupModule(BaseModule):
                 return self.COUNTRY_HINTS[prefix]
         return "Unknown"
 
-    async def run(self, target: str) -> Dict[str, str]:
+    def analyze(self, target: str) -> ProviderResult:
         normalized = self._normalize(target)
         digits = re.sub(r"\D", "", normalized)
         result: Dict[str, str] = {
@@ -53,29 +48,62 @@ class PhoneLookupModule(BaseModule):
             "country_hint": self._country_hint(normalized),
             "enrichment": "local_analysis_only",
         }
+        return ProviderResult(
+            provider=self.name,
+            status="ok",
+            payload=result,
+            meta={"digit_count": len(digits)},
+        )
 
+
+class NumverifyPhoneProvider:
+    name = "numverify"
+
+    async def enrich(self, module: BaseModule, base_payload: Dict[str, str]) -> ProviderResult:
         api_key = os.getenv("NUMVERIFY_API_KEY")
         if not api_key:
-            return result
+            return ProviderResult(
+                provider=self.name,
+                status="skipped",
+                payload=base_payload,
+                error="NUMVERIFY_API_KEY not configured",
+                meta={"reason": "missing_api_key"},
+            )
 
         url = "http://apilayer.net/api/validate"
-        async with self.get_client() as client:
+        async with module.get_client() as client:
             try:
+                normalized = base_payload.get("normalized") or ""
                 resp = await client.get(
                     url,
                     params={"access_key": api_key, "number": normalized, "format": 1},
-                    timeout=self.timeout,
+                    timeout=module.timeout,
                 )
                 if resp.status_code != 200:
-                    result["enrichment"] = f"numverify_http_{resp.status_code}"
-                    return result
+                    payload = dict(base_payload)
+                    payload["enrichment"] = f"numverify_http_{resp.status_code}"
+                    return ProviderResult(
+                        provider=self.name,
+                        status="error",
+                        payload=payload,
+                        error=f"HTTP {resp.status_code}",
+                        meta={"http_status": resp.status_code},
+                    )
                 data = resp.json()
                 if "error" in data:
-                    result["enrichment"] = "numverify_error"
-                    result["numverify_error"] = str(data.get("error"))
-                    return result
+                    payload = dict(base_payload)
+                    payload["enrichment"] = "numverify_error"
+                    payload["numverify_error"] = str(data.get("error"))
+                    return ProviderResult(
+                        provider=self.name,
+                        status="error",
+                        payload=payload,
+                        error="Numverify API error",
+                        meta={"reason": "api_error"},
+                    )
 
-                result.update(
+                payload = dict(base_payload)
+                payload.update(
                     {
                         "enrichment": "numverify",
                         "valid": str(data.get("valid")),
@@ -87,10 +115,58 @@ class PhoneLookupModule(BaseModule):
                         "line_type": str(data.get("line_type")),
                     }
                 )
-                return result
+                return ProviderResult(
+                    provider=self.name,
+                    status="ok",
+                    payload=payload,
+                    meta={"http_status": resp.status_code},
+                )
             except Exception as exc:
-                logger.warning("[%s] Numverify lookup failed: %s", self.name, exc)
-                result["enrichment"] = "numverify_exception"
-                result["numverify_error"] = str(exc)
-                return result
+                payload = dict(base_payload)
+                payload["enrichment"] = "numverify_exception"
+                payload["numverify_error"] = str(exc)
+                return ProviderResult(
+                    provider=self.name,
+                    status="error",
+                    payload=payload,
+                    error=str(exc),
+                    meta={"reason": "request_exception"},
+                )
 
+
+class PhoneLookupModule(BaseModule):
+    name = "Phone_Lookup"
+    version = "1.1.0"
+    description = "Performs phone analysis using provider abstraction (local + optional Numverify)."
+    target_types = ["phone"]
+    author = "OSINT_Framework_Team"
+    timeout = 10
+
+    async def run(self, target: str) -> Dict[str, str]:
+        local_provider = LocalPhoneAnalysisProvider()
+        base_result = local_provider.analyze(target)
+        payload: Dict[str, str] = base_result.to_module_output()
+
+        numverify_provider = NumverifyPhoneProvider()
+        try:
+            enriched = await numverify_provider.enrich(self, dict(base_result.payload))
+        except Exception as exc:
+            logger.warning("[%s] Numverify provider failed unexpectedly: %s", self.name, exc)
+            payload["enrichment"] = "numverify_exception"
+            payload["numverify_error"] = str(exc)
+            payload.setdefault("provider_chain", ["local-phone-analysis", "numverify"])
+            return payload
+
+        if enriched.status != "skipped":
+            payload.update(enriched.payload or {})
+            payload["provider"] = enriched.provider
+            if enriched.error:
+                payload["error"] = enriched.error
+            if enriched.meta:
+                payload["provider_meta"] = enriched.meta
+        else:
+            payload.setdefault("provider", local_provider.name)
+            payload.setdefault("provider_meta", base_result.meta)
+
+        payload.setdefault("provider_chain", [local_provider.name, numverify_provider.name])
+        return payload

@@ -7,6 +7,7 @@ FastAPI tabanlı, plugin mimarili, gerçek zamanlı dashboard içeren modüler O
 - `FastAPI` REST API + `WebSocket` canlı durum iletimi
 - Plugin registry ile hedef tipine göre modül seçimi
 - Asenkron worker pool ile paralel modül çalıştırma
+- Redis tabanlı gerçek queue + ayrı worker process (opsiyonel dağıtık çalışma)
 - SQLite (SQLAlchemy async) ile job/result kalıcılığı
 - API key auth (opsiyonel) + in-memory rate limiting + DB audit log
 - Korelasyon çıktısı + opsiyonel Ollama tabanlı AI özet
@@ -29,6 +30,7 @@ Not: UI yalnızca backend’de yüklü modüllerin desteklediği target tiplerin
 ```text
 .
 ├── run.py                         # Repo kökünden API başlatma
+├── run_worker.py                  # Redis queue worker process başlatma
 ├── alembic.ini                    # Alembic config
 ├── alembic/                       # Migration dosyaları
 ├── requirements.txt               # osint_framework/requirements.txt yönlendirmesi
@@ -73,6 +75,44 @@ Dashboard:
 
 - `http://127.0.0.1:8000/`
 
+### Redis Queue + Ayrı Worker Process (Önerilen Prod Benzeri Akış)
+
+Bu modda API process yalnızca job oluşturur ve Redis queue'ya yazar. Taramaları ayrı `worker` process(leri) yürütür.
+
+1. Redis başlat (`redis-server` veya Docker)
+2. API'yi Redis queue modunda başlat
+3. En az bir worker process başlat
+
+Örnek (ortam değişkeni ile):
+
+```bash
+# 1) Redis (lokalde docker ile)
+docker run --rm -p 6379:6379 redis:7-alpine
+
+# 2) API (ayrı terminal)
+OSINT_QUEUE_MODE=redis \
+OSINT_REDIS_URL=redis://127.0.0.1:6379/0 \
+python run.py
+
+# 3) Worker (ayrı terminal)
+OSINT_QUEUE_MODE=redis \
+OSINT_REDIS_URL=redis://127.0.0.1:6379/0 \
+python run_worker.py
+```
+
+Çoklu worker:
+
+```bash
+OSINT_QUEUE_MODE=redis OSINT_REDIS_URL=redis://127.0.0.1:6379/0 python run_worker.py
+OSINT_QUEUE_MODE=redis OSINT_REDIS_URL=redis://127.0.0.1:6379/0 python run_worker.py
+```
+
+Notlar:
+
+- `POST /scan` yanıtı bu modda genellikle `status="queued"` döner.
+- Dashboard polling ile progress/sonuçları alır; WebSocket olayları worker process'inden paylaşılmadığı için polling kritik path'tir.
+- `GET /api/v1/status` içinde `queue_mode`, `queue_pending`, `queue_processing` alanları görünür.
+
 ### CLI
 
 ```bash
@@ -92,6 +132,10 @@ Base path: `/api/v1`
 - `GET /modules` -> yüklü modül listesi
 - `GET /status` -> framework iç durumu
 - `GET /audit` -> son HTTP API audit kayıtları
+- `POST /cases` -> case oluştur
+- `GET /cases` -> case listesi
+- `GET /cases/{case_id}` -> case detay (tracked targets, jobs, notes)
+- `POST /cases/{case_id}/notes` -> case notu ekle
 - `WS /ws` -> canlı durum bildirimleri
 
 ### Örnek istekler
@@ -100,6 +144,14 @@ Base path: `/api/v1`
 curl -X POST http://127.0.0.1:8000/api/v1/scan \
   -H "Content-Type: application/json" \
   -d '{"target":"example.com","target_type":"domain"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/cases \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Client A - Phishing Investigation","tags":["client-a","phishing"]}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/scan \
+  -H "Content-Type: application/json" \
+  -d '{"target":"example.com","target_type":"domain","case_id":1}'
 
 curl http://127.0.0.1:8000/api/v1/result/<job_id>
 ```
@@ -115,6 +167,7 @@ curl http://127.0.0.1:8000/api/v1/result/<job_id>
 - `security.audit_logging`: tüm `/api/*` isteklerini DB’ye yaz
 - `security.jwt.*`: JWT auth / token / RBAC ayarları
 - `cache.type=redis` + `cache.url`: rate limit backend’i Redis’e taşır (fallback in-memory)
+- `queue.*`: scan execution queue backend (`in_process` / `redis`)
 
 ## Username / Maigret Entegrasyonu
 
@@ -173,6 +226,14 @@ cache:
   enabled: true
   type: redis
   url: redis://localhost:6379/0
+
+queue:
+  mode: redis
+  redis_url: redis://localhost:6379/0
+  redis_pending_key: osint:queue:scan:pending
+  redis_processing_key: osint:queue:scan:processing
+  reserve_timeout_seconds: 5
+  requeue_inflight_on_worker_start: true
 ```
 
 API key header varsayılanı: `X-API-Key`
@@ -208,6 +269,7 @@ Ana ayar dosyası: `osint_framework/config.yaml`
 
 - Dosya yoksa güvenli varsayılanlarla (SQLite + localhost API ayarları) açılır.
 - SQLite schema, eksik bazı kolonlar için otomatik uyumluluk migrasyonu uygular.
+- `OSINT_QUEUE_MODE` ve `OSINT_REDIS_URL` ile Redis queue ayarları ortamdan override edilebilir.
 
 ## Alembic Migration
 

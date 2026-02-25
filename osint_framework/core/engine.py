@@ -6,6 +6,7 @@ from osint_framework.core.config import settings
 from osint_framework.core.correlation import Correlator
 from osint_framework.core.logger import logger
 from osint_framework.job_queue.job_manager import job_manager
+from osint_framework.job_queue.redis_queue_backend import redis_queue_backend
 from osint_framework.job_queue.worker_pool import WorkerPool
 from osint_framework.plugins.registry import registry
 from osint_framework.reports.ai_summary import ai_reporter
@@ -16,11 +17,29 @@ class CoreEngine:
         self.registry = registry
         self.pool = WorkerPool(concurrency=self.config.engine.threads)
         self.queue = job_manager
+        self.distributed_queue = redis_queue_backend
         self._background_tasks: set[asyncio.Task] = set()
+        self._mode: str = "api"
+        self._pool_started = False
+
+    @property
+    def queue_mode(self) -> str:
+        return (self.config.queue.mode or "in_process").lower()
         
-    async def start(self):
-        await self.pool.start()
-        logger.info("Core Engine started.")
+    async def start(self, mode: str = "api"):
+        self._mode = mode
+
+        if self.queue_mode == "redis":
+            await self.distributed_queue.connect()
+
+        should_start_local_pool = self.queue_mode != "redis" or mode == "worker"
+        if should_start_local_pool:
+            await self.pool.start()
+            self._pool_started = True
+        else:
+            self._pool_started = False
+            logger.info("Core Engine API mode running without local pool (Redis queue enabled).")
+        logger.info("Core Engine started (mode=%s, queue_mode=%s).", mode, self.queue_mode)
         
     async def stop(self):
         for task in list(self._background_tasks):
@@ -28,14 +47,18 @@ class CoreEngine:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
-        await self.pool.stop()
-        logger.info("Core Engine stopped.")
+        if self._pool_started:
+            await self.pool.stop()
+            self._pool_started = False
+        if self.queue_mode == "redis":
+            await self.distributed_queue.close()
+        logger.info("Core Engine stopped (mode=%s, queue_mode=%s).", self._mode, self.queue_mode)
 
-    async def queue_scan(self, target: str, target_type: str) -> str:
+    async def queue_scan(self, target: str, target_type: str, case_id: int = None) -> str:
         """
         Receives target, registers job, and enqueues module tasks.
         """
-        job_id = await self.queue.create_job(target, target_type)
+        job_id = await self.queue.create_job(target, target_type, case_id=case_id)
         modules = self.registry.get_modules_for(target_type)
         
         if not modules:
@@ -49,6 +72,13 @@ class CoreEngine:
             return job_id
 
         await self.queue.set_modules_total(job_id, len(modules))
+
+        if self.queue_mode == "redis" and self._mode == "api":
+            await self.queue.update_job_status(job_id, "queued")
+            await self.distributed_queue.enqueue(job_id)
+            await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "queued"})
+            return job_id
+
         await self.queue.update_job_status(job_id, "running")
         await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "running"})
 
@@ -58,6 +88,31 @@ class CoreEngine:
         task.add_done_callback(self._on_background_task_done)
         
         return job_id
+
+    async def process_persisted_job(self, job_id: str):
+        """Execute a queued job by loading target metadata from persistence."""
+        job = await self.queue.get_job(job_id)
+        if not job:
+            raise RuntimeError(f"Job {job_id} not found")
+
+        target = job.get("target")
+        target_type = job.get("target_type")
+        if not target or not target_type:
+            raise RuntimeError(f"Job {job_id} missing target metadata")
+
+        modules = self.registry.get_modules_for(target_type)
+        if not modules:
+            await self.queue.update_job_status(
+                job_id,
+                "error",
+                error_message=f"No modules available for target type '{target_type}'",
+            )
+            return
+
+        await self.queue.set_modules_total(job_id, len(modules))
+        await self.queue.update_job_status(job_id, "running")
+        await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "running"})
+        await self._execute_scan(job_id, target, modules)
 
     def _on_background_task_done(self, task: asyncio.Task):
         self._background_tasks.discard(task)
@@ -116,7 +171,11 @@ class CoreEngine:
             if not job_data:
                 raise RuntimeError("Job record missing after module execution")
 
-            correlated = Correlator.analyze(job_data["results"])
+            correlated = Correlator.analyze(
+                job_data["results"],
+                target=job_data.get("target"),
+                target_type=job_data.get("target_type"),
+            )
             job_data["correlated_intel"] = correlated
 
             logger.info(f"Generating Executive Summary for {job_id}...")
@@ -164,5 +223,14 @@ class CoreEngine:
         if not job:
             return {}
         return job
+
+    async def get_queue_metrics(self) -> Dict[str, Any]:
+        if self.queue_mode != "redis":
+            return {"mode": self.queue_mode}
+        try:
+            lengths = await self.distributed_queue.lengths()
+            return {"mode": "redis", **lengths}
+        except Exception as exc:
+            return {"mode": "redis", "error": str(exc)}
 
 engine = CoreEngine()

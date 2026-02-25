@@ -1,7 +1,8 @@
 import re
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List, Optional
 
 from osint_framework.core.logger import logger
+from osint_framework.core.normalization import IntelNormalizer
 
 class Correlator:
     """
@@ -10,7 +11,12 @@ class Correlator:
     """
     
     @staticmethod
-    def analyze(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def analyze(
+        results: List[Dict[str, Any]],
+        *,
+        target: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Merge results and find correlations like Email -> Domain -> IP
         """
@@ -40,7 +46,41 @@ class Correlator:
             # Extract Domains (simplified)
             # A real implementation would use tldextract
             
-        logger.debug(f"Correlator found {len(extracted_emails)} emails and {len(extracted_ips)} IPs.")
+        normalized = IntelNormalizer.build(
+            results,
+            target=target,
+            target_type=target_type,
+        )
+
+        # Enrich simple counters from normalized graph where possible.
+        normalized_entities = normalized.get("entities") or []
+        normalized_domains = {
+            ent.get("value")
+            for ent in normalized_entities
+            if ent.get("type") == "domain" and ent.get("value")
+        }
+        normalized_emails = {
+            ent.get("value")
+            for ent in normalized_entities
+            if ent.get("type") == "email" and ent.get("value")
+        }
+        normalized_ips = {
+            ent.get("value")
+            for ent in normalized_entities
+            if ent.get("type") == "ip" and ent.get("value")
+        }
+
+        extracted_domains.update(normalized_domains)
+        extracted_emails.update(normalized_emails)
+        extracted_ips.update(normalized_ips)
+
+        logger.debug(
+            "Correlator found %d emails, %d IPs, %d domains and built %d normalized entities.",
+            len(extracted_emails),
+            len(extracted_ips),
+            len(extracted_domains),
+            len(normalized_entities),
+        )
             
         return {
             "raw_results": merged_data,
@@ -48,5 +88,6 @@ class Correlator:
                 "emails_found": list(extracted_emails),
                 "ips_found": list(extracted_ips),
                 "domains_found": list(extracted_domains)
-            }
+            },
+            "normalized": normalized,
         }

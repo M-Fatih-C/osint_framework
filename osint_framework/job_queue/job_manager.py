@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from osint_framework.core.database import db_manager
 from osint_framework.core.logger import logger
-from osint_framework.core.models import Result, Scan, Target
+from osint_framework.core.models import Case, CaseTarget, Result, Scan, Target
 
 
 def utc_now_naive() -> datetime.datetime:
@@ -20,8 +20,17 @@ class JobManager:
         except (ValueError, TypeError):
             return None
 
-    async def create_job(self, target_val: str, target_type: str) -> str:
+    async def create_job(self, target_val: str, target_type: str, case_id: int = None) -> str:
         async with db_manager.async_session_maker() as session:
+            case_obj = None
+            now = utc_now_naive()
+            if case_id is not None:
+                case_stmt = select(Case).where(Case.id == int(case_id))
+                case_res = await session.execute(case_stmt)
+                case_obj = case_res.scalar_one_or_none()
+                if not case_obj:
+                    raise ValueError(f"Case {case_id} not found")
+
             # Get or create target
             stmt = select(Target).where(Target.value == target_val, Target.type == target_type)
             result = await session.execute(stmt)
@@ -36,12 +45,35 @@ class JobManager:
             scan = Scan(
                 id=job_id,
                 target_id=target_obj.id,
+                case_id=case_obj.id if case_obj else None,
                 status="pending",
                 modules_total=0,
                 correlated_intel=None,
                 error_message=None,
             )
             session.add(scan)
+
+            if case_obj:
+                case_obj.updated_at = now
+                ct_stmt = select(CaseTarget).where(
+                    CaseTarget.case_id == case_obj.id,
+                    CaseTarget.target_value == target_val,
+                    CaseTarget.target_type == target_type,
+                )
+                ct_res = await session.execute(ct_stmt)
+                case_target = ct_res.scalar_one_or_none()
+                if case_target:
+                    case_target.last_seen_at = now
+                else:
+                    session.add(
+                        CaseTarget(
+                            case_id=case_obj.id,
+                            target_value=target_val,
+                            target_type=target_type,
+                            first_seen_at=now,
+                            last_seen_at=now,
+                        )
+                    )
             await session.commit()
             
             logger.info(f"Created new job {str(job_id)} for target {target_val}")
@@ -79,6 +111,7 @@ class JobManager:
                 "target": target_obj.value if target_obj else "unknown",
                 "target_type": target_obj.type if target_obj else "unknown",
                 "status": scan.status,
+                "case_id": scan.case_id,
                 "modules_total": scan.modules_total or 0,
                 "modules_done": len(results),
                 "results": [{"module": r.module_name, "data": r.data} for r in results],
@@ -163,6 +196,7 @@ class JobManager:
                     "id": str(s.id),
                     "target_id": s.target_id,
                     "status": s.status,
+                    "case_id": s.case_id,
                     "modules_total": s.modules_total or 0,
                     "error_message": s.error_message,
                     "created_at": s.created_at.isoformat() if s.created_at else None

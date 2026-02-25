@@ -1,12 +1,26 @@
 from fastapi import APIRouter, HTTPException, Request
-from typing import List
+from typing import List, Optional
 from osint_framework.api.schemas import (
-    ScanRequest, ScanResponse, StatusResponse, 
-    ResultResponse, ModuleInfo, SystemStatusResponse, AuditLogListResponse,
-    AuthTokenRequest, AuthTokenResponse, AuthMeResponse
+    AuditLogListResponse,
+    AuthMeResponse,
+    AuthTokenRequest,
+    AuthTokenResponse,
+    CaseCreateRequest,
+    CaseDetailResponse,
+    CaseListResponse,
+    CaseNoteCreateRequest,
+    CaseNoteResponse,
+    CaseSummary,
+    ModuleInfo,
+    ResultResponse,
+    ScanRequest,
+    ScanResponse,
+    StatusResponse,
+    SystemStatusResponse,
 )
 from osint_framework.core.audit import audit_logger
 from osint_framework.core.auth import authenticate_local_user, issue_access_token, jwt_enabled
+from osint_framework.core.case_manager import case_manager
 from osint_framework.core.engine import engine
 
 router = APIRouter()
@@ -54,11 +68,23 @@ async def create_scan(request: ScanRequest):
                 status_code=400,
                 detail=f"No modules registered for target_type '{request.target_type}'",
             )
-        job_id = await engine.queue_scan(request.target, request.target_type)
+        job_id = await engine.queue_scan(
+            request.target,
+            request.target_type,
+            case_id=request.case_id,
+        )
         job = await engine.queue.get_job(job_id)
-        return ScanResponse(job_id=job_id, status=(job or {}).get("status", "queued"))
+        return ScanResponse(
+            job_id=job_id,
+            status=(job or {}).get("status", "queued"),
+            case_id=(job or {}).get("case_id"),
+        )
     except HTTPException:
         raise
+    except ValueError as e:
+        if "Case" in str(e) and "not found" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -71,6 +97,7 @@ async def get_scan_status(job_id: str):
         
     return StatusResponse(
         job_id=job["id"],
+        case_id=job.get("case_id"),
         target=job["target"],
         target_type=job["target_type"],
         status=job["status"],
@@ -88,6 +115,7 @@ async def get_scan_results(job_id: str):
         
     return ResultResponse(
         job_id=job["id"],
+        case_id=job.get("case_id"),
         target=job["target"],
         target_type=job["target_type"],
         status=job["status"],
@@ -108,11 +136,16 @@ async def get_system_status():
     """Get internal framework metrics."""
     jobs = await engine.queue.get_all_jobs()
     running_jobs = sum(1 for j in jobs if j["status"] == "running")
+    queue_metrics = await engine.get_queue_metrics()
     return SystemStatusResponse(
         status="operational",
         workers_active=len([w for w in engine.pool.workers if not w.done()]),
         jobs_running=running_jobs,
-        modules_loaded=len(engine.registry.list_all())
+        modules_loaded=len(engine.registry.list_all()),
+        queue_mode=queue_metrics.get("mode"),
+        queue_pending=queue_metrics.get("pending"),
+        queue_processing=queue_metrics.get("processing"),
+        queue_error=queue_metrics.get("error"),
     )
 
 
@@ -121,3 +154,41 @@ async def get_audit_logs(limit: int = 100):
     """List recent HTTP API audit logs."""
     items = await audit_logger.list_recent(limit=limit)
     return AuditLogListResponse(items=items, count=len(items))
+
+
+@router.post("/cases", response_model=CaseSummary)
+async def create_case(payload: CaseCreateRequest):
+    """Create an investigation case container for grouping scans, notes, and pivots."""
+    case = await case_manager.create_case(
+        title=payload.title,
+        description=payload.description,
+        tags=payload.tags,
+        priority=payload.priority,
+        status=payload.status,
+    )
+    return case
+
+
+@router.get("/cases", response_model=CaseListResponse)
+async def list_cases(limit: int = 50, status: Optional[str] = None):
+    """List investigation cases."""
+    items = await case_manager.list_cases(limit=limit, status=status)
+    return CaseListResponse(items=items, count=len(items))
+
+
+@router.get("/cases/{case_id}", response_model=CaseDetailResponse)
+async def get_case(case_id: int):
+    """Get a case with tracked targets, recent jobs, and notes."""
+    case = await case_manager.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case
+
+
+@router.post("/cases/{case_id}/notes", response_model=CaseNoteResponse)
+async def add_case_note(case_id: int, payload: CaseNoteCreateRequest):
+    """Append an analyst note to a case."""
+    note = await case_manager.add_note(case_id, payload.content, author=payload.author)
+    if not note:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return note

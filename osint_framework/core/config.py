@@ -2,6 +2,7 @@ import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
+import os
 
 class EngineConfig(BaseModel):
     threads: int = 20
@@ -27,6 +28,16 @@ class ApiConfig(BaseModel):
     rate_limit: str = "100/minute"
     port: int = 8000
     host: str = "0.0.0.0"
+
+
+class QueueConfig(BaseModel):
+    mode: str = "in_process"  # in_process | redis
+    redis_url: str = "redis://localhost:6379/0"
+    redis_pending_key: str = "osint:queue:scan:pending"
+    redis_processing_key: str = "osint:queue:scan:processing"
+    reserve_timeout_seconds: int = 5
+    requeue_inflight_on_worker_start: bool = True
+    enabled_for_api: bool = True
 
 class JWTUserConfig(BaseModel):
     username: str
@@ -94,6 +105,7 @@ class AppConfig(BaseModel):
     )
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
+    queue: QueueConfig = Field(default_factory=QueueConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
@@ -108,7 +120,25 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         raise FileNotFoundError(f"Configuration file {config_path} not found.")
     
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
+
+    # Targeted env overrides for distributed queue/worker deployment.
+    queue_data = data.setdefault("queue", {})
+    if os.getenv("OSINT_QUEUE_MODE"):
+        queue_data["mode"] = os.getenv("OSINT_QUEUE_MODE")
+    if os.getenv("OSINT_REDIS_URL"):
+        queue_data["redis_url"] = os.getenv("OSINT_REDIS_URL")
+    if os.getenv("OSINT_REDIS_PENDING_KEY"):
+        queue_data["redis_pending_key"] = os.getenv("OSINT_REDIS_PENDING_KEY")
+    if os.getenv("OSINT_REDIS_PROCESSING_KEY"):
+        queue_data["redis_processing_key"] = os.getenv("OSINT_REDIS_PROCESSING_KEY")
+    if os.getenv("OSINT_QUEUE_RESERVE_TIMEOUT_SECONDS"):
+        try:
+            queue_data["reserve_timeout_seconds"] = int(
+                os.getenv("OSINT_QUEUE_RESERVE_TIMEOUT_SECONDS", "5")
+            )
+        except ValueError:
+            pass
         
     return AppConfig(**data)
 

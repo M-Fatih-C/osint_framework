@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from typing import Any, Dict
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -13,10 +14,14 @@ from pydantic import ValidationError
 from osint_framework.api.main import app
 from osint_framework.api.schemas import ScanRequest
 from osint_framework.core.config import settings
+from osint_framework.core.correlation import Correlator
+from osint_framework.core.case_manager import case_manager
 from osint_framework.core.database import db_manager
 from osint_framework.core.engine import engine
 from osint_framework.core.security import api_security
 from osint_framework.job_queue.job_manager import job_manager
+from osint_framework.job_queue.redis_queue_backend import RedisQueueBackend
+from osint_framework.job_queue.redis_worker_service import RedisWorkerService
 from osint_framework.core.config import JWTUserConfig
 from osint_framework.plugins.base import BaseModule
 from osint_framework.plugins.person.username import UsernameModule
@@ -51,6 +56,77 @@ class SchemaValidationTests(unittest.TestCase):
         self.assertEqual(req.target_type, "person_name")
 
 
+class CorrelationNormalizationTests(unittest.TestCase):
+    def test_correlator_builds_normalized_entities_relations_evidence(self):
+        results = [
+            {
+                "module": "Person_Name_Handle_Generator",
+                "data": {
+                    "target_person_name": "Muhammet Fatih Çetintaş",
+                    "normalized_name": "Muhammet Fatih Çetintaş",
+                    "username_candidates": {
+                        "conservative": ["muhammetfatihcetintas", "m.f.cetintas"]
+                    },
+                    "email_local_part_candidates": ["muhammet.fatih.cetintas"],
+                },
+            },
+            {
+                "module": "Username_Checker",
+                "data": {
+                    "target_username": "muhammetfatihcetintas",
+                    "profiles": [
+                        {
+                            "site": "GitHub",
+                            "url": "https://github.com/muhammetfatihcetintas",
+                            "http_status": 200,
+                        }
+                    ],
+                },
+            },
+            {
+                "module": "Person_Name_Search_Dorks",
+                "data": {
+                    "target_person_name": "Muhammet Fatih Çetintaş",
+                    "quick_links": [
+                        {
+                            "label": "LinkedIn profiles",
+                            "google": "https://www.google.com/search?q=foo",
+                            "bing": "https://www.bing.com/search?q=foo",
+                        }
+                    ],
+                },
+            },
+            {
+                "module": "Subdomain_Scanner",
+                "data": {
+                    "target_domain": "example.com",
+                    "subdomains": ["api.example.com", "dev.example.com"],
+                },
+            },
+        ]
+
+        correlated = Correlator.analyze(
+            results, target="Muhammet Fatih Çetintaş", target_type="person_name"
+        )
+        normalized = correlated.get("normalized")
+        self.assertIsInstance(normalized, dict)
+        self.assertEqual(normalized.get("schema_version"), "1.0")
+
+        entities = normalized.get("entities") or []
+        relations = normalized.get("relations") or []
+        evidence = normalized.get("evidence") or []
+        entity_types = {e.get("type") for e in entities}
+        relation_types = {r.get("type") for r in relations}
+
+        self.assertIn("person_name", entity_types)
+        self.assertIn("username_candidate", entity_types)
+        self.assertIn("url", entity_types)
+        self.assertIn("search_url", entity_types)
+        self.assertIn("candidate_username_for", relation_types)
+        self.assertIn("has_profile", relation_types)
+        self.assertGreaterEqual(len(evidence), 4)
+
+
 class ApiBehaviorTests(unittest.TestCase):
     def test_importable_app_and_phone_target_is_listed(self):
         with TestClient(app) as client:
@@ -81,6 +157,42 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertIn("Person_Name_Analyzer", module_names)
         self.assertIn("Person_Name_Handle_Generator", module_names)
         self.assertIn("Person_Name_Search_Dorks", module_names)
+
+    def test_case_crud_endpoints(self):
+        with TestClient(app) as client:
+            create_resp = client.post(
+                "/api/v1/cases",
+                json={
+                    "title": "Unit Test Case",
+                    "description": "Track a target across scans",
+                    "tags": ["unit", "regression"],
+                    "priority": "high",
+                },
+            )
+            self.assertEqual(create_resp.status_code, 200)
+            case = create_resp.json()
+            self.assertEqual(case["title"], "Unit Test Case")
+            self.assertEqual(case["priority"], "high")
+            case_id = case["id"]
+
+            note_resp = client.post(
+                f"/api/v1/cases/{case_id}/notes",
+                json={"content": "Initial scoping completed", "author": "tester"},
+            )
+            self.assertEqual(note_resp.status_code, 200)
+            self.assertEqual(note_resp.json()["author"], "tester")
+
+            list_resp = client.get("/api/v1/cases?limit=10")
+            self.assertEqual(list_resp.status_code, 200)
+            items = list_resp.json()["items"]
+            self.assertTrue(any(item["id"] == case_id for item in items))
+
+            detail_resp = client.get(f"/api/v1/cases/{case_id}")
+            self.assertEqual(detail_resp.status_code, 200)
+            detail = detail_resp.json()
+            self.assertEqual(detail["id"], case_id)
+            self.assertGreaterEqual(detail["counts"]["notes"], 1)
+            self.assertTrue(any(note["content"] == "Initial scoping completed" for note in detail["notes"]))
 
 
 class SecurityMiddlewareTests(unittest.TestCase):
@@ -258,6 +370,143 @@ if __name__ == "__main__":
         self.assertEqual(result["maigret"]["top_sites"], 20)
 
 
+class _FakeRedisPipeline:
+    def __init__(self, client):
+        self.client = client
+        self._ops = []
+
+    def llen(self, key):
+        self._ops.append(("llen", key))
+        return self
+
+    async def execute(self):
+        out = []
+        for op, key in self._ops:
+            if op == "llen":
+                out.append(len(self.client._lists.get(key, [])))
+        return out
+
+
+class _FakeAsyncRedisClient:
+    def __init__(self):
+        self._lists = {}
+        self.closed = False
+
+    async def ping(self):
+        return True
+
+    async def close(self):
+        self.closed = True
+
+    async def lpush(self, key, raw):
+        self._lists.setdefault(key, []).insert(0, raw)
+        return len(self._lists[key])
+
+    async def brpoplpush(self, src, dst, timeout=0):
+        return await self.rpoplpush(src, dst)
+
+    async def rpoplpush(self, src, dst):
+        src_list = self._lists.setdefault(src, [])
+        if not src_list:
+            return None
+        raw = src_list.pop()
+        self._lists.setdefault(dst, []).insert(0, raw)
+        return raw
+
+    async def lrem(self, key, count, raw):
+        values = self._lists.setdefault(key, [])
+        removed = 0
+        remaining = []
+        for item in values:
+            if removed < abs(count) and item == raw:
+                removed += 1
+                continue
+            remaining.append(item)
+        self._lists[key] = remaining
+        return removed
+
+    def pipeline(self):
+        return _FakeRedisPipeline(self)
+
+
+class RedisQueueBackendTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.original_queue = settings.queue.model_copy(deep=True)
+        settings.queue.mode = "redis"
+        settings.queue.redis_pending_key = "test:pending"
+        settings.queue.redis_processing_key = "test:processing"
+        settings.queue.reserve_timeout_seconds = 1
+        self.client = _FakeAsyncRedisClient()
+        self.backend = RedisQueueBackend(client=self.client)
+
+    async def asyncTearDown(self):
+        settings.queue = self.original_queue
+
+    async def test_enqueue_reserve_ack_and_requeue(self):
+        await self.backend.enqueue("job-a")
+        await self.backend.enqueue("job-b")
+
+        lengths = await self.backend.lengths()
+        self.assertEqual(lengths["pending"], 2)
+        self.assertEqual(lengths["processing"], 0)
+
+        first = await self.backend.reserve()
+        self.assertIsNotNone(first)
+        self.assertEqual(first.job_id, "job-a")  # FIFO
+
+        lengths = await self.backend.lengths()
+        self.assertEqual(lengths["pending"], 1)
+        self.assertEqual(lengths["processing"], 1)
+
+        moved = await self.backend.requeue_all_inflight()
+        self.assertEqual(moved, 1)
+        lengths = await self.backend.lengths()
+        self.assertEqual(lengths["pending"], 2)
+        self.assertEqual(lengths["processing"], 0)
+
+        item = await self.backend.reserve()
+        self.assertIn(item.job_id, {"job-a", "job-b"})
+        await self.backend.ack(item)
+        lengths = await self.backend.lengths()
+        self.assertEqual(lengths["processing"], 0)
+
+
+class RedisWorkerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_once_processes_and_acks(self):
+        fake_item = SimpleNamespace(job_id="job-123", raw="raw")
+
+        class FakeQueueBackend:
+            enabled = True
+
+            def __init__(self):
+                self.acked = []
+
+            async def reserve(self):
+                return fake_item
+
+            async def ack(self, item):
+                self.acked.append(item.job_id)
+
+        backend = FakeQueueBackend()
+        processed = []
+        status_updates = []
+
+        class FakeEngine:
+            def __init__(self):
+                self.queue = SimpleNamespace(
+                    update_job_status=lambda *a, **k: asyncio.sleep(0)
+                )
+
+            async def process_persisted_job(self, job_id):
+                processed.append(job_id)
+
+        service = RedisWorkerService(FakeEngine(), queue_backend=backend)
+        did_work = await service.run_once()
+        self.assertTrue(did_work)
+        self.assertEqual(processed, ["job-123"])
+        self.assertEqual(backend.acked, ["job-123"])
+
+
 class EnginePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await db_manager.init_db()
@@ -277,8 +526,12 @@ class EnginePersistenceTests(unittest.IsolatedAsyncioTestCase):
         ai_reporter.generate_summary = self.original_ai_generate
 
     async def test_job_fields_persist_modules_total_and_correlated_intel(self):
+        case = await case_manager.create_case(
+            title=f"Engine persistence case {int(time.time() * 1000)}",
+            tags=["engine-test"],
+        )
         target = f"example-{int(time.time() * 1000)}.com"
-        job_id = await engine.queue_scan(target, "domain")
+        job_id = await engine.queue_scan(target, "domain", case_id=case["id"])
 
         for _ in range(50):
             job = await engine.get_merged_results(job_id)
@@ -288,18 +541,33 @@ class EnginePersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         job = await engine.get_merged_results(job_id)
         self.assertEqual(job["status"], "completed")
+        self.assertEqual(job.get("case_id"), case["id"])
         self.assertEqual(job["modules_total"], 1)
         self.assertEqual(job["modules_done"], 1)
         self.assertIn("correlated_intel", job)
         self.assertIsInstance(job["correlated_intel"], dict)
         self.assertEqual(job["correlated_intel"].get("summary"), f"summary for {target}")
+        self.assertIsInstance(job["correlated_intel"].get("normalized"), dict)
+        self.assertEqual(
+            job["correlated_intel"]["normalized"].get("schema_version"),
+            "1.0",
+        )
 
         persisted = await job_manager.get_job(job_id)
+        self.assertEqual(persisted.get("case_id"), case["id"])
         self.assertEqual(persisted["modules_total"], 1)
         self.assertIsNotNone(persisted["correlated_intel"])
         self.assertEqual(
             persisted["correlated_intel"].get("summary"), f"summary for {target}"
         )
+        self.assertIsInstance(persisted["correlated_intel"].get("normalized"), dict)
+
+        case_detail = await case_manager.get_case(case["id"])
+        self.assertIsNotNone(case_detail)
+        self.assertEqual(case_detail["counts"]["scans"], 1)
+        self.assertEqual(case_detail["counts"]["targets"], 1)
+        self.assertTrue(any(t["target"] == target for t in case_detail["tracked_targets"]))
+        self.assertTrue(any(j["job_id"] == job_id for j in case_detail["recent_jobs"]))
 
 
 if __name__ == "__main__":

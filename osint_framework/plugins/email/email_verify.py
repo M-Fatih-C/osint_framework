@@ -2,16 +2,12 @@ import dns.asyncresolver
 from typing import Any, Dict, List
 
 from osint_framework.core.logger import logger
+from osint_framework.core.provider_models import ProviderResult
 from osint_framework.plugins.base import BaseModule
 
 
-class EmailVerifyModule(BaseModule):
-    name = "Email_Verify"
-    version = "1.0.0"
-    description = "Performs lightweight email verification (syntax + MX lookup)."
-    target_types = ["email"]
-    author = "OSINT_Framework_Team"
-    timeout = 10
+class DnsEmailVerificationProvider:
+    name = "dnspython-email"
 
     @staticmethod
     def _split_email(target: str):
@@ -27,11 +23,16 @@ class EmailVerifyModule(BaseModule):
         answers = await resolver.resolve(domain, record_type)
         return [str(rdata) for rdata in answers]
 
-    async def run(self, target: str) -> Dict[str, Any]:
-        logger.debug("[%s] Verifying email %s", self.name, target)
+    async def verify(self, target: str) -> ProviderResult:
         local, domain = self._split_email(target)
         if not local or not domain:
-            return {"valid_syntax": False, "error": "Invalid email format"}
+            return ProviderResult(
+                provider=self.name,
+                status="error",
+                error="Invalid email format",
+                payload={"valid_syntax": False},
+                meta={"reason": "invalid_format"},
+            )
 
         result: Dict[str, Any] = {
             "valid_syntax": True,
@@ -59,5 +60,36 @@ class EmailVerifyModule(BaseModule):
         elif not result["mx_records"] and not result["a_records"]:
             result["deliverability_estimate"] = "undeliverable_or_unresolvable"
 
-        return result
+        return ProviderResult(
+            provider=self.name,
+            status="ok",
+            payload=result,
+            meta={
+                "mx_count": len(result.get("mx_records") or []),
+                "a_count": len(result.get("a_records") or []),
+            },
+        )
 
+
+class EmailVerifyModule(BaseModule):
+    name = "Email_Verify"
+    version = "1.1.0"
+    description = "Performs lightweight email verification using provider abstraction (dnspython backend)."
+    target_types = ["email"]
+    author = "OSINT_Framework_Team"
+    timeout = 10
+
+    async def run(self, target: str) -> Dict[str, Any]:
+        logger.debug("[%s] Verifying email %s", self.name, target)
+        provider = DnsEmailVerificationProvider()
+        try:
+            result = await provider.verify(target)
+            return result.to_module_output()
+        except Exception as exc:
+            return {
+                "provider": provider.name,
+                "status": "error",
+                "valid_syntax": False,
+                "error": str(exc),
+                "provider_meta": {"reason": "provider_runtime"},
+            }

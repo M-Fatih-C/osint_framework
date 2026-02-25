@@ -54,6 +54,10 @@ class DatabaseManager:
                 migrations.append(
                     "ALTER TABLE scans ADD COLUMN error_message TEXT NULL"
                 )
+            if "case_id" not in columns:
+                migrations.append(
+                    "ALTER TABLE scans ADD COLUMN case_id INTEGER NULL"
+                )
 
             for stmt in migrations:
                 await conn.execute(text(stmt))

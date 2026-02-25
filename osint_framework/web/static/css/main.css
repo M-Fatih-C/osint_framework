@@ -116,6 +116,26 @@ body {
     line-height: 1.35;
 }
 
+.label-inline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-link-inline {
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+}
+
+.btn-link-inline:hover {
+    text-decoration: underline;
+}
+
 .input-group input,
 .input-group select {
     background: rgba(13, 17, 23, 0.8);
@@ -289,6 +309,63 @@ body {
     cursor: not-allowed;
 }
 
+.btn-small {
+    padding: 10px 12px;
+    font-size: 13px;
+    width: 100%;
+    justify-content: center;
+}
+
+.quick-case-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    background: rgba(13, 17, 23, 0.35);
+    margin-bottom: 16px;
+}
+
+.quick-case-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+.input-group.compact {
+    margin-bottom: 12px;
+}
+
+.input-group.compact label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.input-group.compact input {
+    padding: 10px;
+    font-size: 13px;
+}
+
+.inline-status {
+    margin-top: 10px;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--text-muted);
+}
+
+.inline-status.success {
+    color: #3fb950;
+}
+
+.inline-status.error {
+    color: var(--danger);
+}
+
 .terminal-output {
     padding: 16px;
     font-family: var(--font-mono);
@@ -418,6 +495,137 @@ body {
     line-height: 1.5;
 }
 
+.case-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 210px;
+}
+
+.case-content {
+    padding: 14px 16px 16px;
+}
+
+.case-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.case-summary-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.case-summary-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.case-summary-meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.case-chip {
+    font-size: 11px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    background: rgba(48, 54, 61, 0.35);
+    border-radius: 999px;
+    color: var(--text-color);
+}
+
+.case-chip.accent {
+    border-color: rgba(88, 166, 255, 0.4);
+    color: var(--accent);
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.case-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+    gap: 10px;
+}
+
+.case-stat {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px;
+    background: rgba(13, 17, 23, 0.35);
+}
+
+.case-stat-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.case-stat-value {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 16px;
+    color: #fff;
+}
+
+.case-section {
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
+}
+
+.case-section-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.case-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.case-list-item {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(13, 17, 23, 0.3);
+    padding: 8px 10px;
+}
+
+.case-list-item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.case-list-item-main {
+    font-size: 13px;
+    color: #fff;
+    word-break: break-word;
+}
+
+.case-list-item-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    font-family: var(--font-mono);
+}
+
+.case-empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 /* Animations */
 @keyframes spin {
     100% {
@@ -478,6 +686,15 @@ body {
         align-items: flex-start;
         flex-direction: column;
         gap: 4px;
+    }
+
+    .case-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .case-summary-top {
+        flex-direction: column;
+        align-items: flex-start;
     }
 
     .progress-container {

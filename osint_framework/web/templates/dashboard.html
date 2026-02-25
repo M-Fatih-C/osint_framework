@@ -37,6 +37,32 @@
                         <input type="text" id="targetInput" placeholder="e.g. example.com" required autocomplete="off">
                         <small class="input-help" id="targetHint">For username scans, enter a handle (no spaces), not a full name.</small>
                     </div>
+                    <div class="input-group">
+                        <div class="label-inline">
+                            <label for="caseSelect">Case (Optional)</label>
+                            <button type="button" class="btn-link-inline" id="refreshCasesBtn">Refresh</button>
+                        </div>
+                        <select id="caseSelect">
+                            <option value="">Ad-hoc (No Case)</option>
+                        </select>
+                        <small class="input-help" id="caseHint">Attach this scan to a case for grouped history, notes, and pivots.</small>
+                    </div>
+                    <div class="quick-case-panel">
+                        <div class="quick-case-header">
+                            <span>Quick Case Create</span>
+                            <span class="badge neutral" id="casesCountBadge">0</span>
+                        </div>
+                        <div class="input-group compact">
+                            <label for="caseTitleInput">Case Title</label>
+                            <input type="text" id="caseTitleInput" placeholder="e.g. Client A - Credential Exposure" maxlength="200" autocomplete="off">
+                        </div>
+                        <div class="input-group compact">
+                            <label for="caseTagsInput">Tags (comma separated)</label>
+                            <input type="text" id="caseTagsInput" placeholder="client-a, leak, priority-high" maxlength="400" autocomplete="off">
+                        </div>
+                        <button type="button" class="btn-secondary btn-small" id="createCaseBtn">Create & Select Case</button>
+                        <div class="inline-status" id="caseCreateStatus">No case selected. Scans will run ad-hoc.</div>
+                    </div>
                     <button type="submit" class="btn-primary" id="startBtn">
                         <span class="btn-text">Initiate Scan</span>
                         <div class="spinner hidden" id="btnSpinner"></div>
@@ -64,6 +90,7 @@
                 <div class="current-target">
                     <h2>Target: <span id="displayTarget" class="glow-text">None</span></h2>
                     <span class="job-id" id="displayJobId">Awaiting Scan...</span>
+                    <span class="job-id hidden" id="displayCaseContext">Case: Ad-hoc</span>
                 </div>
                 <div class="progress-container hidden" id="progressContainer">
                     <div class="progress-bar">
@@ -112,6 +139,17 @@
                     </div>
                     <div class="links-content default-text" id="linksContent">
                         Run a scan to collect clickable links from discovered results.
+                    </div>
+                </div>
+
+                <!-- Case Details -->
+                <div class="case-panel glass-panel full-width">
+                    <div class="panel-header">
+                        <h3><i class="fas fa-folder-open"></i> Case Workspace</h3>
+                        <span class="badge neutral" id="casePanelStatus">No Case</span>
+                    </div>
+                    <div class="case-content default-text" id="caseDetailsContent">
+                        Select a case to view tracked targets, recent jobs, and analyst notes.
                     </div>
                 </div>
             </div>

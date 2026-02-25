@@ -128,7 +128,7 @@ async def startup_event():
     try:
         await db_manager.init_db()
         registry.discover()
-        await engine.start()
+        await engine.start(mode="api")
         logger.info("Application started successfully.")
     except Exception as e:
         logger.error(f"Startup failed: {e}")

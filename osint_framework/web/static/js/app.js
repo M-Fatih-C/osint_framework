@@ -4,12 +4,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetInput = document.getElementById('targetInput');
     const targetType = document.getElementById('targetType');
     const targetHint = document.getElementById('targetHint');
+    const caseSelect = document.getElementById('caseSelect');
+    const caseHint = document.getElementById('caseHint');
+    const refreshCasesBtn = document.getElementById('refreshCasesBtn');
+    const caseTitleInput = document.getElementById('caseTitleInput');
+    const caseTagsInput = document.getElementById('caseTagsInput');
+    const createCaseBtn = document.getElementById('createCaseBtn');
+    const caseCreateStatus = document.getElementById('caseCreateStatus');
+    const casesCountBadge = document.getElementById('casesCountBadge');
     const startBtn = document.getElementById('startBtn');
     const btnSpinner = document.getElementById('btnSpinner');
     const btnText = document.querySelector('.btn-text');
 
     const displayTarget = document.getElementById('displayTarget');
     const displayJobId = document.getElementById('displayJobId');
+    const displayCaseContext = document.getElementById('displayCaseContext');
     const terminalOutput = document.getElementById('terminalOutput');
     const activeJobsBadge = document.getElementById('activeJobsBadge');
 
@@ -22,12 +31,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const aiContent = document.getElementById('aiContent');
     const linksContent = document.getElementById('linksContent');
     const linksCountBadge = document.getElementById('linksCountBadge');
+    const caseDetailsContent = document.getElementById('caseDetailsContent');
+    const casePanelStatus = document.getElementById('casePanelStatus');
 
     // State
     let currentJobId = null;
     let finalizedJobId = null;
     let pollInterval = null;
     let graph = null;
+    let currentCaseId = null;
+    let caseList = [];
+    let caseDetails = null;
+    let caseLoadInFlight = false;
 
     const TARGET_INPUT_META = {
         domain: {
@@ -81,11 +96,20 @@ document.addEventListener('DOMContentLoaded', () => {
             displayTarget.textContent = target;
 
             try {
-                const res = await ApiService.startScan(target, type);
+                const selectedCaseId = getSelectedCaseId();
+                const res = await ApiService.startScan(target, type, selectedCaseId);
                 currentJobId = res.job_id;
                 finalizedJobId = null;
                 displayJobId.textContent = currentJobId;
+                if (typeof res.case_id === 'number') {
+                    currentCaseId = res.case_id;
+                    await refreshSelectedCaseDetails({ silent: true });
+                }
+                updateCaseContextDisplay();
                 logTerminal(`[System] Job created with ID: ${currentJobId}`, "success");
+                if (typeof res.case_id === 'number') {
+                    logTerminal(`[System] Job attached to Case #${res.case_id}.`, "info");
+                }
 
                 progressContainer.classList.remove('hidden');
                 progressFill.style.width = '0%';
@@ -124,7 +148,21 @@ document.addEventListener('DOMContentLoaded', () => {
         applyTargetInputMeta();
         targetType?.addEventListener('change', applyTargetInputMeta);
         targetInput?.addEventListener('input', () => targetInput.setCustomValidity(''));
+        caseSelect?.addEventListener('change', async () => {
+            currentCaseId = getSelectedCaseId();
+            setCaseCreateStatus(currentCaseId ? `Selected Case #${currentCaseId}.` : 'No case selected. Scans will run ad-hoc.');
+            updateCaseContextDisplay();
+            await refreshSelectedCaseDetails({ silent: false });
+        });
+        refreshCasesBtn?.addEventListener('click', async () => {
+            await loadCases({ preserveSelection: true });
+        });
+        createCaseBtn?.addEventListener('click', async () => {
+            await createQuickCase();
+        });
+        caseTitleInput?.addEventListener('input', () => setCaseCreateStatus(''));
         updateSystemStatus();
+        loadCases({ preserveSelection: true }).catch((e) => console.error("Case bootstrap failed", e));
         setInterval(updateSystemStatus, 10000); // Poll every 10s
     } catch (e) {
         console.error("Failed to initialize Status Poller:", e);
@@ -245,6 +283,12 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await ApiService.getJobResult(jobId);
             finalizedJobId = jobId;
+            if (typeof res.case_id === 'number') {
+                currentCaseId = res.case_id;
+                syncCaseSelectToCurrentCase();
+                updateCaseContextDisplay();
+                refreshSelectedCaseDetails({ silent: true }).catch((e) => console.error(e));
+            }
             if (graph) {
                 try {
                     graph.updateFromResults(res.target, res.target_type, res.results);
@@ -318,6 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
         finalizedJobId = null;
         if (pollInterval) clearInterval(pollInterval);
         progressContainer.classList.add('hidden');
+        updateCaseContextDisplay();
         if (graph) {
             try { graph.clear(); } catch (e) { console.error(e); }
         }
@@ -354,6 +399,11 @@ document.addEventListener('DOMContentLoaded', () => {
         targetInput.placeholder = meta.placeholder;
         if (targetHint) {
             targetHint.textContent = meta.hint;
+        }
+        if (caseHint) {
+            caseHint.textContent = currentCaseId
+                ? `This scan will be attached to Case #${currentCaseId}.`
+                : 'Attach this scan to a case for grouped history, notes, and pivots.';
         }
     }
 
@@ -518,5 +568,284 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         Object.values(value).forEach(item => scanObjectForUrls(item, onUrl, seenObjects));
+    }
+
+    function getSelectedCaseId() {
+        if (!caseSelect) return null;
+        const raw = caseSelect.value;
+        if (!raw) return null;
+        const parsed = Number.parseInt(raw, 10);
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function syncCaseSelectToCurrentCase() {
+        if (!caseSelect) return;
+        if (typeof currentCaseId === 'number' && currentCaseId > 0) {
+            caseSelect.value = String(currentCaseId);
+        } else {
+            caseSelect.value = '';
+        }
+    }
+
+    function setCaseCreateStatus(message, type = '') {
+        if (!caseCreateStatus) return;
+        caseCreateStatus.textContent = message || (currentCaseId
+            ? `Selected Case #${currentCaseId}.`
+            : 'No case selected. Scans will run ad-hoc.');
+        caseCreateStatus.classList.remove('success', 'error');
+        if (type) {
+            caseCreateStatus.classList.add(type);
+        }
+    }
+
+    function updateCaseContextDisplay() {
+        if (!displayCaseContext) return;
+        const selected = caseList.find(c => c && c.id === currentCaseId) || caseDetails;
+        if (!currentCaseId || !selected) {
+            displayCaseContext.textContent = 'Case: Ad-hoc';
+            displayCaseContext.classList.remove('hidden');
+            applyTargetInputMeta();
+            return;
+        }
+        displayCaseContext.textContent = `Case #${selected.id}: ${selected.title || 'Untitled Case'}`;
+        displayCaseContext.classList.remove('hidden');
+        applyTargetInputMeta();
+    }
+
+    async function loadCases({ preserveSelection = true, selectCaseId = null } = {}) {
+        if (caseLoadInFlight) return;
+        caseLoadInFlight = true;
+        if (refreshCasesBtn) refreshCasesBtn.disabled = true;
+        try {
+            const payload = await ApiService.listCases(100);
+            const items = Array.isArray(payload?.items) ? payload.items : [];
+            caseList = items;
+
+            if (casesCountBadge) {
+                casesCountBadge.textContent = String(items.length);
+                casesCountBadge.classList.toggle('online', items.length > 0);
+                casesCountBadge.classList.toggle('neutral', items.length === 0);
+            }
+
+            const previous = preserveSelection ? getSelectedCaseId() : null;
+            renderCaseSelectOptions(items);
+
+            let nextCaseId = selectCaseId;
+            if (!Number.isInteger(nextCaseId)) {
+                nextCaseId = previous;
+            }
+            if (Number.isInteger(nextCaseId) && items.some(c => c.id === nextCaseId)) {
+                currentCaseId = nextCaseId;
+                if (caseSelect) caseSelect.value = String(nextCaseId);
+            } else {
+                currentCaseId = null;
+                if (caseSelect) caseSelect.value = '';
+            }
+
+            updateCaseContextDisplay();
+            await refreshSelectedCaseDetails({ silent: true });
+            setCaseCreateStatus('');
+        } catch (err) {
+            console.error(err);
+            setCaseCreateStatus(`Failed to load cases: ${err.message}`, 'error');
+            renderCasePanelPlaceholder('Unable to load case workspace. Check API /cases endpoint.');
+        } finally {
+            caseLoadInFlight = false;
+            if (refreshCasesBtn) refreshCasesBtn.disabled = false;
+        }
+    }
+
+    function renderCaseSelectOptions(items) {
+        if (!caseSelect) return;
+        const currentValue = caseSelect.value;
+        caseSelect.innerHTML = '';
+
+        const adHoc = document.createElement('option');
+        adHoc.value = '';
+        adHoc.textContent = 'Ad-hoc (No Case)';
+        caseSelect.appendChild(adHoc);
+
+        items.forEach(item => {
+            const option = document.createElement('option');
+            option.value = String(item.id);
+            const counts = item.counts || {};
+            const scans = Number.isFinite(counts.scans) ? counts.scans : 0;
+            option.textContent = `#${item.id} ${item.title} (${scans} scans)`;
+            caseSelect.appendChild(option);
+        });
+
+        if (currentValue && [...caseSelect.options].some(opt => opt.value === currentValue)) {
+            caseSelect.value = currentValue;
+        }
+    }
+
+    async function createQuickCase() {
+        const title = (caseTitleInput?.value || '').trim();
+        const tagsRaw = (caseTagsInput?.value || '').trim();
+        if (!title) {
+            setCaseCreateStatus('Case title is required.', 'error');
+            caseTitleInput?.focus();
+            return;
+        }
+
+        const tags = tagsRaw
+            ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean).slice(0, 30)
+            : [];
+
+        if (createCaseBtn) createCaseBtn.disabled = true;
+        setCaseCreateStatus('Creating case...');
+        try {
+            const created = await ApiService.createCase({
+                title,
+                tags,
+                priority: 'normal',
+            });
+            if (caseTitleInput) caseTitleInput.value = '';
+            if (caseTagsInput) caseTagsInput.value = '';
+            await loadCases({ preserveSelection: false, selectCaseId: created.id });
+            setCaseCreateStatus(`Created and selected Case #${created.id}.`, 'success');
+            logTerminal(`[Case] Created Case #${created.id}: ${created.title}`, 'success');
+        } catch (err) {
+            setCaseCreateStatus(`Case create failed: ${err.message}`, 'error');
+        } finally {
+            if (createCaseBtn) createCaseBtn.disabled = false;
+        }
+    }
+
+    async function refreshSelectedCaseDetails({ silent = false } = {}) {
+        if (!currentCaseId) {
+            caseDetails = null;
+            renderCasePanelPlaceholder('Select a case to view tracked targets, recent jobs, and analyst notes.');
+            updateCaseContextDisplay();
+            return;
+        }
+
+        if (!silent) {
+            renderCasePanelPlaceholder(`Loading Case #${currentCaseId}...`);
+        }
+
+        try {
+            const detail = await ApiService.getCase(currentCaseId);
+            caseDetails = detail;
+            renderCaseDetails(detail);
+            updateCaseContextDisplay();
+        } catch (err) {
+            console.error(err);
+            renderCasePanelPlaceholder(`Failed to load Case #${currentCaseId}: ${err.message}`);
+        }
+    }
+
+    function renderCasePanelPlaceholder(message) {
+        if (caseDetailsContent) {
+            caseDetailsContent.innerHTML = `<div class="case-empty">${escapeHtml(message || 'No case selected.')}</div>`;
+        }
+        if (casePanelStatus) {
+            casePanelStatus.textContent = currentCaseId ? `Case #${currentCaseId}` : 'No Case';
+            casePanelStatus.classList.remove('online');
+            casePanelStatus.classList.add('neutral');
+        }
+    }
+
+    function renderCaseDetails(detail) {
+        if (!caseDetailsContent || !detail) return;
+        const counts = detail.counts || {};
+        const tags = Array.isArray(detail.tags) ? detail.tags : [];
+        const trackedTargets = Array.isArray(detail.tracked_targets) ? detail.tracked_targets.slice(0, 5) : [];
+        const recentJobs = Array.isArray(detail.recent_jobs) ? detail.recent_jobs.slice(0, 5) : [];
+        const notes = Array.isArray(detail.notes) ? detail.notes.slice(0, 3) : [];
+
+        if (casePanelStatus) {
+            casePanelStatus.textContent = `${detail.status || 'open'} · #${detail.id}`;
+            casePanelStatus.classList.remove('neutral');
+            casePanelStatus.classList.add('online');
+        }
+
+        const tagsHtml = tags.length
+            ? tags.map(tag => `<span class="case-chip accent">${escapeHtml(tag)}</span>`).join('')
+            : '<span class="case-chip">No tags</span>';
+
+        const trackedHtml = trackedTargets.length
+            ? trackedTargets.map(t => `
+                <div class="case-list-item">
+                    <div class="case-list-item-row">
+                        <div class="case-list-item-main">${escapeHtml(t.target || '')}</div>
+                        <span class="case-chip">${escapeHtml(t.target_type || 'unknown')}</span>
+                    </div>
+                    <div class="case-list-item-sub">last_seen: ${escapeHtml(t.last_seen_at || '-')}</div>
+                </div>
+            `).join('')
+            : '<div class="case-empty">No tracked targets yet.</div>';
+
+        const jobsHtml = recentJobs.length
+            ? recentJobs.map(j => `
+                <div class="case-list-item">
+                    <div class="case-list-item-row">
+                        <div class="case-list-item-main">${escapeHtml(j.target || '')}</div>
+                        <span class="case-chip">${escapeHtml(j.status || 'unknown')}</span>
+                    </div>
+                    <div class="case-list-item-sub">${escapeHtml(j.target_type || '?')} · ${escapeHtml(j.job_id || '')}</div>
+                </div>
+            `).join('')
+            : '<div class="case-empty">No jobs attached yet.</div>';
+
+        const notesHtml = notes.length
+            ? notes.map(n => `
+                <div class="case-list-item">
+                    <div class="case-list-item-main">${escapeHtml(n.content || '')}</div>
+                    <div class="case-list-item-sub">${escapeHtml(n.author || 'unknown')} · ${escapeHtml(n.created_at || '-')}</div>
+                </div>
+            `).join('')
+            : '<div class="case-empty">No notes yet.</div>';
+
+        caseDetailsContent.innerHTML = `
+            <div class="case-summary">
+                <div class="case-summary-top">
+                    <div>
+                        <div class="case-summary-title">#${escapeHtml(String(detail.id))} ${escapeHtml(detail.title || 'Untitled Case')}</div>
+                        <div class="inline-status">${escapeHtml(detail.description || 'No description')}</div>
+                    </div>
+                    <div class="case-summary-meta">
+                        <span class="case-chip">${escapeHtml(detail.status || 'open')}</span>
+                        <span class="case-chip">${escapeHtml(detail.priority || 'normal')}</span>
+                        ${tagsHtml}
+                    </div>
+                </div>
+                <div class="case-grid">
+                    <div class="case-stat">
+                        <div class="case-stat-label">Scans</div>
+                        <div class="case-stat-value">${escapeHtml(String(counts.scans || 0))}</div>
+                    </div>
+                    <div class="case-stat">
+                        <div class="case-stat-label">Targets</div>
+                        <div class="case-stat-value">${escapeHtml(String(counts.targets || 0))}</div>
+                    </div>
+                    <div class="case-stat">
+                        <div class="case-stat-label">Notes</div>
+                        <div class="case-stat-value">${escapeHtml(String(counts.notes || 0))}</div>
+                    </div>
+                </div>
+                <div class="case-section">
+                    <div class="case-section-title">Tracked Targets</div>
+                    <div class="case-list">${trackedHtml}</div>
+                </div>
+                <div class="case-section">
+                    <div class="case-section-title">Recent Jobs</div>
+                    <div class="case-list">${jobsHtml}</div>
+                </div>
+                <div class="case-section">
+                    <div class="case-section-title">Latest Notes</div>
+                    <div class="case-list">${notesHtml}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 });
