@@ -2,7 +2,7 @@ import uuid
 import datetime
 from typing import Any, Dict, List
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from osint_framework.core.database import db_manager
 from osint_framework.core.logger import logger
@@ -117,6 +117,13 @@ class JobManager:
                 "results": [{"module": r.module_name, "data": r.data} for r in results],
                 "correlated_intel": scan.correlated_intel,
                 "error_message": scan.error_message,
+                "worker_lease_owner": scan.worker_lease_owner,
+                "worker_heartbeat_at": (
+                    scan.worker_heartbeat_at.isoformat() if scan.worker_heartbeat_at else None
+                ),
+                "worker_lease_expires_at": (
+                    scan.worker_lease_expires_at.isoformat() if scan.worker_lease_expires_at else None
+                ),
                 "created_at": scan.created_at.isoformat() if scan.created_at else None,
                 "completed_at": scan.completed_at.isoformat() if scan.completed_at else None,
             }
@@ -135,6 +142,12 @@ class JobManager:
                     scan.error_message = error_message
                 elif status != "error":
                     scan.error_message = None
+                if status in ["queued", "pending"]:
+                    scan.completed_at = None
+                if status in ["completed", "error", "queued", "pending"]:
+                    scan.worker_lease_owner = None
+                    scan.worker_heartbeat_at = None
+                    scan.worker_lease_expires_at = None
                 if status in ["completed", "error"]:
                     scan.completed_at = utc_now_naive()
                 await session.commit()
@@ -183,6 +196,137 @@ class JobManager:
             if scan:
                 scan.correlated_intel = correlated_intel
                 await session.commit()
+
+    async def reset_job_for_retry(self, job_id: str):
+        """Clear partial results/intel before re-processing a previously started job."""
+        async with db_manager.async_session_maker() as session:
+            job_uuid = self._parse_uuid(job_id)
+            if not job_uuid:
+                return
+
+            scan_stmt = select(Scan).where(Scan.id == job_uuid)
+            scan_res = await session.execute(scan_stmt)
+            scan = scan_res.scalar_one_or_none()
+            if not scan:
+                return
+
+            await session.execute(delete(Result).where(Result.scan_id == job_uuid))
+            scan.correlated_intel = None
+            scan.error_message = None
+            scan.completed_at = None
+            await session.commit()
+
+    async def claim_worker_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        async with db_manager.async_session_maker() as session:
+            job_uuid = self._parse_uuid(job_id)
+            if not job_uuid:
+                return False
+            stmt = select(Scan).where(Scan.id == job_uuid)
+            res = await session.execute(stmt)
+            scan = res.scalar_one_or_none()
+            if not scan:
+                return False
+            if scan.status in {"completed", "error"}:
+                return False
+            now = utc_now_naive()
+            scan.worker_lease_owner = worker_id
+            scan.worker_heartbeat_at = now
+            scan.worker_lease_expires_at = now + datetime.timedelta(seconds=max(5, int(lease_seconds)))
+            await session.commit()
+            return True
+
+    async def heartbeat_worker_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        async with db_manager.async_session_maker() as session:
+            job_uuid = self._parse_uuid(job_id)
+            if not job_uuid:
+                return False
+            stmt = select(Scan).where(Scan.id == job_uuid)
+            res = await session.execute(stmt)
+            scan = res.scalar_one_or_none()
+            if not scan:
+                return False
+            if scan.worker_lease_owner and scan.worker_lease_owner != worker_id:
+                return False
+            now = utc_now_naive()
+            scan.worker_lease_owner = worker_id
+            scan.worker_heartbeat_at = now
+            scan.worker_lease_expires_at = now + datetime.timedelta(seconds=max(5, int(lease_seconds)))
+            await session.commit()
+            return True
+
+    async def clear_worker_lease(self, job_id: str):
+        async with db_manager.async_session_maker() as session:
+            job_uuid = self._parse_uuid(job_id)
+            if not job_uuid:
+                return
+            stmt = select(Scan).where(Scan.id == job_uuid)
+            res = await session.execute(stmt)
+            scan = res.scalar_one_or_none()
+            if not scan:
+                return
+            scan.worker_lease_owner = None
+            scan.worker_heartbeat_at = None
+            scan.worker_lease_expires_at = None
+            await session.commit()
+
+    async def recover_stale_running_jobs(self, action: str = "requeue") -> Dict[str, Any]:
+        """Recover running jobs whose worker lease has expired or is missing."""
+        now = utc_now_naive()
+        recovered = []
+        action = (action or "requeue").lower()
+        if action not in {"requeue", "error"}:
+            action = "requeue"
+
+        async with db_manager.async_session_maker() as session:
+            stmt = select(Scan).where(Scan.status == "running")
+            res = await session.execute(stmt)
+            scans = res.scalars().all()
+
+            for scan in scans:
+                expired = (
+                    scan.worker_lease_expires_at is None
+                    or scan.worker_lease_expires_at < now
+                )
+                if not expired:
+                    continue
+
+                previous_status = scan.status
+                if action == "requeue":
+                    scan.status = "queued"
+                    scan.error_message = "Recovered stale running job after lease expiry"
+                    scan.completed_at = None
+                else:
+                    scan.status = "error"
+                    scan.error_message = "Stale running job recovered after lease expiry"
+                    scan.completed_at = now
+
+                scan.worker_lease_owner = None
+                scan.worker_heartbeat_at = None
+                scan.worker_lease_expires_at = None
+                recovered.append(
+                    {
+                        "job_id": str(scan.id),
+                        "from_status": previous_status,
+                        "to_status": scan.status,
+                    }
+                )
+
+            if recovered:
+                await session.commit()
+
+        if recovered:
+            logger.warning("Recovered %d stale running jobs with action=%s", len(recovered), action)
+        return {"count": len(recovered), "jobs": recovered, "action": action}
         
     async def get_all_jobs(self) -> List[Dict[str, Any]]:
         async with db_manager.async_session_maker() as session:
@@ -199,6 +343,7 @@ class JobManager:
                     "case_id": s.case_id,
                     "modules_total": s.modules_total or 0,
                     "error_message": s.error_message,
+                    "worker_lease_owner": s.worker_lease_owner,
                     "created_at": s.created_at.isoformat() if s.created_at else None
                 })
             return jobs

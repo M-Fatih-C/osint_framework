@@ -31,7 +31,11 @@ queue:
   redis_pending_key: osint:queue:scan:pending
   redis_processing_key: osint:queue:scan:processing
   reserve_timeout_seconds: 5
+  worker_lease_seconds: 45
+  worker_heartbeat_interval_seconds: 10
   requeue_inflight_on_worker_start: true
+  stale_job_recovery_on_worker_start: true
+  stale_job_recovery_action: requeue
   enabled_for_api: true
 
 security:

@@ -49,6 +49,9 @@ class Scan(Base):
     modules_total = Column(Integer, nullable=False, default=0)
     correlated_intel = Column(JSONB, nullable=True)
     error_message = Column(String, nullable=True)
+    worker_lease_owner = Column(String, nullable=True, index=True)
+    worker_heartbeat_at = Column(DateTime, nullable=True, index=True)
+    worker_lease_expires_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=utc_now_naive)
     completed_at = Column(DateTime, nullable=True)
     

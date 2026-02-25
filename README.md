@@ -112,6 +112,8 @@ Notlar:
 - `POST /scan` yanıtı bu modda genellikle `status="queued"` döner.
 - Dashboard polling ile progress/sonuçları alır; WebSocket olayları worker process'inden paylaşılmadığı için polling kritik path'tir.
 - `GET /api/v1/status` içinde `queue_mode`, `queue_pending`, `queue_processing` alanları görünür.
+- Worker process job çalıştırırken DB üzerinde lease/heartbeat tutar (`worker_lease_*` alanları).
+- Worker startup sırasında `processing` listesindeki Redis işler pending'e taşınır ve lease'i geçmiş `running` job'lar otomatik toparlanır (`requeue` veya `error`).
 
 ### CLI
 
@@ -233,7 +235,11 @@ queue:
   redis_pending_key: osint:queue:scan:pending
   redis_processing_key: osint:queue:scan:processing
   reserve_timeout_seconds: 5
+  worker_lease_seconds: 45
+  worker_heartbeat_interval_seconds: 10
   requeue_inflight_on_worker_start: true
+  stale_job_recovery_on_worker_start: true
+  stale_job_recovery_action: requeue
 ```
 
 API key header varsayılanı: `X-API-Key`
@@ -270,6 +276,10 @@ Ana ayar dosyası: `osint_framework/config.yaml`
 - Dosya yoksa güvenli varsayılanlarla (SQLite + localhost API ayarları) açılır.
 - SQLite schema, eksik bazı kolonlar için otomatik uyumluluk migrasyonu uygular.
 - `OSINT_QUEUE_MODE` ve `OSINT_REDIS_URL` ile Redis queue ayarları ortamdan override edilebilir.
+- Ek queue override'ları:
+  - `OSINT_QUEUE_WORKER_LEASE_SECONDS`
+  - `OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS`
+  - `OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION` (`requeue` / `error`)
 
 ## Alembic Migration
 

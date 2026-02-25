@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import os
 import sys
@@ -425,6 +426,14 @@ class _FakeAsyncRedisClient:
         self._lists[key] = remaining
         return removed
 
+    async def lrange(self, key, start, end):
+        values = list(self._lists.setdefault(key, []))
+        if end == -1:
+            end = len(values) - 1
+        if not values:
+            return []
+        return values[start : end + 1]
+
     def pipeline(self):
         return _FakeRedisPipeline(self)
 
@@ -445,9 +454,13 @@ class RedisQueueBackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_enqueue_reserve_ack_and_requeue(self):
         await self.backend.enqueue("job-a")
         await self.backend.enqueue("job-b")
+        added = await self.backend.enqueue_if_missing("job-a")
+        self.assertFalse(added)
+        added = await self.backend.enqueue_if_missing("job-c")
+        self.assertTrue(added)
 
         lengths = await self.backend.lengths()
-        self.assertEqual(lengths["pending"], 2)
+        self.assertEqual(lengths["pending"], 3)
         self.assertEqual(lengths["processing"], 0)
 
         first = await self.backend.reserve()
@@ -455,13 +468,13 @@ class RedisQueueBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.job_id, "job-a")  # FIFO
 
         lengths = await self.backend.lengths()
-        self.assertEqual(lengths["pending"], 1)
+        self.assertEqual(lengths["pending"], 2)
         self.assertEqual(lengths["processing"], 1)
 
         moved = await self.backend.requeue_all_inflight()
         self.assertEqual(moved, 1)
         lengths = await self.backend.lengths()
-        self.assertEqual(lengths["pending"], 2)
+        self.assertEqual(lengths["pending"], 3)
         self.assertEqual(lengths["processing"], 0)
 
         item = await self.backend.reserve()
@@ -477,6 +490,7 @@ class RedisWorkerServiceTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeQueueBackend:
             enabled = True
+            consumer_name = "fake-worker"
 
             def __init__(self):
                 self.acked = []
@@ -489,13 +503,37 @@ class RedisWorkerServiceTests(unittest.IsolatedAsyncioTestCase):
 
         backend = FakeQueueBackend()
         processed = []
-        status_updates = []
+        queue_calls = []
 
         class FakeEngine:
             def __init__(self):
-                self.queue = SimpleNamespace(
-                    update_job_status=lambda *a, **k: asyncio.sleep(0)
+                self.config = SimpleNamespace(
+                    queue=SimpleNamespace(worker_lease_seconds=30, worker_heartbeat_interval_seconds=60)
                 )
+                self.queue = SimpleNamespace(
+                    claim_worker_lease=self._claim,
+                    heartbeat_worker_lease=self._heartbeat,
+                    clear_worker_lease=self._clear,
+                    reset_job_for_retry=self._reset,
+                    update_job_status=self._update_status,
+                )
+
+            async def _claim(self, *args, **kwargs):
+                queue_calls.append(("claim", args, kwargs))
+                return True
+
+            async def _heartbeat(self, *args, **kwargs):
+                queue_calls.append(("heartbeat", args, kwargs))
+                return True
+
+            async def _clear(self, *args, **kwargs):
+                queue_calls.append(("clear", args, kwargs))
+
+            async def _reset(self, *args, **kwargs):
+                queue_calls.append(("reset", args, kwargs))
+
+            async def _update_status(self, *args, **kwargs):
+                queue_calls.append(("status", args, kwargs))
 
             async def process_persisted_job(self, job_id):
                 processed.append(job_id)
@@ -505,6 +543,44 @@ class RedisWorkerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(did_work)
         self.assertEqual(processed, ["job-123"])
         self.assertEqual(backend.acked, ["job-123"])
+        self.assertIn("claim", [c[0] for c in queue_calls])
+        self.assertIn("reset", [c[0] for c in queue_calls])
+        self.assertIn("clear", [c[0] for c in queue_calls])
+
+
+class JobLeaseRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        await db_manager.init_db()
+
+    async def test_recover_stale_running_job_requeues_and_clears_lease(self):
+        job_id = await job_manager.create_job(
+            f"lease-recovery-{int(time.time() * 1000)}.example.com",
+            "domain",
+        )
+        await job_manager.update_job_status(job_id, "running")
+        await job_manager.claim_worker_lease(job_id, worker_id="worker-test", lease_seconds=5)
+
+        # Force lease expiry by writing a past expiry timestamp.
+        async with db_manager.async_session_maker() as session:
+            from sqlalchemy import select
+            from osint_framework.core.models import Scan
+            import uuid as _uuid
+            res = await session.execute(select(Scan).where(Scan.id == _uuid.UUID(job_id)))
+            scan = res.scalar_one()
+            scan.worker_lease_expires_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - datetime.timedelta(seconds=1)
+            await session.commit()
+
+        recovery = await job_manager.recover_stale_running_jobs(action="requeue")
+        self.assertGreaterEqual(recovery["count"], 1)
+        recovered_job = next((j for j in recovery["jobs"] if j["job_id"] == job_id), None)
+        self.assertIsNotNone(recovered_job)
+        self.assertEqual(recovered_job["to_status"], "queued")
+
+        job = await job_manager.get_job(job_id)
+        self.assertEqual(job["status"], "queued")
+        self.assertIsNone(job.get("worker_lease_owner"))
+        self.assertIsNone(job.get("worker_heartbeat_at"))
+        self.assertIsNone(job.get("worker_lease_expires_at"))
 
 
 class EnginePersistenceTests(unittest.IsolatedAsyncioTestCase):

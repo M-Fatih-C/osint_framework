@@ -58,6 +58,18 @@ class DatabaseManager:
                 migrations.append(
                     "ALTER TABLE scans ADD COLUMN case_id INTEGER NULL"
                 )
+            if "worker_lease_owner" not in columns:
+                migrations.append(
+                    "ALTER TABLE scans ADD COLUMN worker_lease_owner TEXT NULL"
+                )
+            if "worker_heartbeat_at" not in columns:
+                migrations.append(
+                    "ALTER TABLE scans ADD COLUMN worker_heartbeat_at DATETIME NULL"
+                )
+            if "worker_lease_expires_at" not in columns:
+                migrations.append(
+                    "ALTER TABLE scans ADD COLUMN worker_lease_expires_at DATETIME NULL"
+                )
 
             for stmt in migrations:
                 await conn.execute(text(stmt))

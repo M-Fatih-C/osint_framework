@@ -36,7 +36,11 @@ class QueueConfig(BaseModel):
     redis_pending_key: str = "osint:queue:scan:pending"
     redis_processing_key: str = "osint:queue:scan:processing"
     reserve_timeout_seconds: int = 5
+    worker_lease_seconds: int = 45
+    worker_heartbeat_interval_seconds: int = 10
     requeue_inflight_on_worker_start: bool = True
+    stale_job_recovery_on_worker_start: bool = True
+    stale_job_recovery_action: str = "requeue"  # requeue | error
     enabled_for_api: bool = True
 
 class JWTUserConfig(BaseModel):
@@ -139,6 +143,24 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             )
         except ValueError:
             pass
+    if os.getenv("OSINT_QUEUE_WORKER_LEASE_SECONDS"):
+        try:
+            queue_data["worker_lease_seconds"] = int(
+                os.getenv("OSINT_QUEUE_WORKER_LEASE_SECONDS", "45")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS"):
+        try:
+            queue_data["worker_heartbeat_interval_seconds"] = int(
+                os.getenv("OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS", "10")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION"):
+        queue_data["stale_job_recovery_action"] = os.getenv(
+            "OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION"
+        )
         
     return AppConfig(**data)
 

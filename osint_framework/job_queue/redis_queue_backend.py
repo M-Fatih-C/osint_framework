@@ -79,6 +79,25 @@ class RedisQueueBackend:
         await self._client.lpush(self.pending_key, raw)
         logger.debug("Enqueued job %s into Redis queue", job_id)
 
+    async def contains_job(self, job_id: str) -> bool:
+        await self.connect()
+        for key in (self.pending_key, self.processing_key):
+            raw_items = await self._client.lrange(key, 0, -1)
+            for raw in raw_items or []:
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    continue
+                if str((payload or {}).get("job_id") or "") == str(job_id):
+                    return True
+        return False
+
+    async def enqueue_if_missing(self, job_id: str) -> bool:
+        if await self.contains_job(job_id):
+            return False
+        await self.enqueue(job_id)
+        return True
+
     async def reserve(self) -> Optional[RedisQueuedJob]:
         await self.connect()
         raw = await self._client.brpoplpush(
