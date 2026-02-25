@@ -35,6 +35,7 @@ class QueueConfig(BaseModel):
     redis_url: str = "redis://localhost:6379/0"
     redis_pending_key: str = "osint:queue:scan:pending"
     redis_processing_key: str = "osint:queue:scan:processing"
+    redis_events_channel: str = "osint:events:ws"
     reserve_timeout_seconds: int = 5
     worker_lease_seconds: int = 45
     worker_heartbeat_interval_seconds: int = 10
@@ -136,6 +137,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         queue_data["redis_pending_key"] = os.getenv("OSINT_REDIS_PENDING_KEY")
     if os.getenv("OSINT_REDIS_PROCESSING_KEY"):
         queue_data["redis_processing_key"] = os.getenv("OSINT_REDIS_PROCESSING_KEY")
+    if os.getenv("OSINT_REDIS_EVENTS_CHANNEL"):
+        queue_data["redis_events_channel"] = os.getenv("OSINT_REDIS_EVENTS_CHANNEL")
     if os.getenv("OSINT_QUEUE_RESERVE_TIMEOUT_SECONDS"):
         try:
             queue_data["reserve_timeout_seconds"] = int(

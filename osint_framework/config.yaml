@@ -30,6 +30,7 @@ queue:
   redis_url: redis://localhost:6379/0
   redis_pending_key: osint:queue:scan:pending
   redis_processing_key: osint:queue:scan:processing
+  redis_events_channel: osint:events:ws
   reserve_timeout_seconds: 5
   worker_lease_seconds: 45
   worker_heartbeat_interval_seconds: 10

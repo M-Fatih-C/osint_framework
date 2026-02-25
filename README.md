@@ -8,6 +8,7 @@ FastAPI tabanlı, plugin mimarili, gerçek zamanlı dashboard içeren modüler O
 - Plugin registry ile hedef tipine göre modül seçimi
 - Asenkron worker pool ile paralel modül çalıştırma
 - Redis tabanlı gerçek queue + ayrı worker process (opsiyonel dağıtık çalışma)
+- Redis pub/sub ile worker -> API WebSocket event köprüsü (queue progress canlı aktarım)
 - SQLite (SQLAlchemy async) ile job/result kalıcılığı
 - API key auth (opsiyonel) + in-memory rate limiting + DB audit log
 - Korelasyon çıktısı + opsiyonel Ollama tabanlı AI özet
@@ -110,7 +111,8 @@ OSINT_QUEUE_MODE=redis OSINT_REDIS_URL=redis://127.0.0.1:6379/0 python run_worke
 Notlar:
 
 - `POST /scan` yanıtı bu modda genellikle `status="queued"` döner.
-- Dashboard polling ile progress/sonuçları alır; WebSocket olayları worker process'inden paylaşılmadığı için polling kritik path'tir.
+- Dashboard polling hala fallback olarak çalışır; Redis pub/sub bridge aktifse worker event'leri WebSocket üzerinden canlı iletilir.
+- Redis queue modunda worker event'leri (`job_update`, `module_result`) Redis pub/sub üzerinden API process'e aktarılır ve WebSocket client'lara re-broadcast edilir.
 - `GET /api/v1/status` içinde `queue_mode`, `queue_pending`, `queue_processing` alanları görünür.
 - Worker process job çalıştırırken DB üzerinde lease/heartbeat tutar (`worker_lease_*` alanları).
 - Worker startup sırasında `processing` listesindeki Redis işler pending'e taşınır ve lease'i geçmiş `running` job'lar otomatik toparlanır (`requeue` veya `error`).
@@ -234,6 +236,7 @@ queue:
   redis_url: redis://localhost:6379/0
   redis_pending_key: osint:queue:scan:pending
   redis_processing_key: osint:queue:scan:processing
+  redis_events_channel: osint:events:ws
   reserve_timeout_seconds: 5
   worker_lease_seconds: 45
   worker_heartbeat_interval_seconds: 10
@@ -280,6 +283,7 @@ Ana ayar dosyası: `osint_framework/config.yaml`
   - `OSINT_QUEUE_WORKER_LEASE_SECONDS`
   - `OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS`
   - `OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION` (`requeue` / `error`)
+  - `OSINT_REDIS_EVENTS_CHANNEL`
 
 ## Alembic Migration
 

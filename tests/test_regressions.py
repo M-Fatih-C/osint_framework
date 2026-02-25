@@ -19,6 +19,7 @@ from osint_framework.core.correlation import Correlator
 from osint_framework.core.case_manager import case_manager
 from osint_framework.core.database import db_manager
 from osint_framework.core.engine import engine
+from osint_framework.core.redis_event_bus import RedisEventBus
 from osint_framework.core.security import api_security
 from osint_framework.job_queue.job_manager import job_manager
 from osint_framework.job_queue.redis_queue_backend import RedisQueueBackend
@@ -438,6 +439,42 @@ class _FakeAsyncRedisClient:
         return _FakeRedisPipeline(self)
 
 
+class _FakePubSub:
+    def __init__(self, messages=None):
+        self.messages = list(messages or [])
+        self.subscribed = []
+        self.closed = False
+
+    async def subscribe(self, channel):
+        self.subscribed.append(channel)
+
+    async def get_message(self, ignore_subscribe_messages=True, timeout=0):
+        if self.messages:
+            return self.messages.pop(0)
+        await asyncio.sleep(0)
+        return None
+
+    async def unsubscribe(self, channel):
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeEventRedisClient(_FakeAsyncRedisClient):
+    def __init__(self, pubsub_messages=None):
+        super().__init__()
+        self.published = []
+        self._pubsub = _FakePubSub(pubsub_messages)
+
+    async def publish(self, channel, payload):
+        self.published.append((channel, payload))
+        return 1
+
+    def pubsub(self):
+        return self._pubsub
+
+
 class RedisQueueBackendTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_queue = settings.queue.model_copy(deep=True)
@@ -482,6 +519,58 @@ class RedisQueueBackendTests(unittest.IsolatedAsyncioTestCase):
         await self.backend.ack(item)
         lengths = await self.backend.lengths()
         self.assertEqual(lengths["processing"], 0)
+
+
+class RedisEventBusTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.original_queue = settings.queue.model_copy(deep=True)
+        settings.queue.mode = "redis"
+        settings.queue.redis_events_channel = "test:events"
+
+    async def asyncTearDown(self):
+        settings.queue = self.original_queue
+
+    async def test_publish_and_decode_envelope_roundtrip(self):
+        client = _FakeEventRedisClient()
+        bus = RedisEventBus(client=client)
+        event = {"type": "job_update", "job_id": "abc", "status": "running"}
+        await bus.publish(event, source="worker-1")
+        self.assertEqual(len(client.published), 1)
+        channel, raw = client.published[0]
+        self.assertEqual(channel, "test:events")
+        envelope = RedisEventBus.decode_envelope(raw)
+        self.assertEqual(envelope["source"], "worker-1")
+        self.assertEqual(envelope["event"], event)
+
+    async def test_listen_forever_dispatches_and_ignores_self_source(self):
+        self_source = "api-self"
+        other_source = "worker-x"
+        ignored = json.dumps({"source": self_source, "event": {"type": "job_update"}})
+        accepted = json.dumps(
+            {
+                "source": other_source,
+                "sent_at_ms": 1,
+                "event": {"type": "module_result", "job_id": "j1", "module": "DNS_Enum"},
+            }
+        )
+        client = _FakeEventRedisClient(
+            pubsub_messages=[
+                {"type": "message", "data": ignored},
+                {"type": "message", "data": accepted},
+            ]
+        )
+        bus = RedisEventBus(client=client)
+        stop_event = asyncio.Event()
+        seen = []
+
+        async def handler(event, envelope):
+            seen.append((event, envelope))
+            stop_event.set()
+
+        await bus.listen_forever(handler, stop_event, ignore_sources={self_source}, poll_interval_seconds=0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0]["type"], "module_result")
+        self.assertEqual(seen[0][1]["source"], other_source)
 
 
 class RedisWorkerServiceTests(unittest.IsolatedAsyncioTestCase):

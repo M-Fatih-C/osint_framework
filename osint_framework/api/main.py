@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from osint_framework.api.routes import router
+from osint_framework.api.redis_ws_bridge import redis_ws_bridge
 from osint_framework.api.ws import ws_manager
 from osint_framework.core.audit import audit_logger
 from osint_framework.core.config import settings
@@ -129,6 +130,7 @@ async def startup_event():
         await db_manager.init_db()
         registry.discover()
         await engine.start(mode="api")
+        await redis_ws_bridge.start()
         logger.info("Application started successfully.")
     except Exception as e:
         logger.error(f"Startup failed: {e}")
@@ -138,5 +140,6 @@ async def startup_event():
 async def shutdown_event():
     logger.info("Shutting down OSINT Framework...")
     await api_security.shutdown()
+    await redis_ws_bridge.stop()
     await engine.stop()
     logger.info("Shutdown complete.")

@@ -5,6 +5,7 @@ from osint_framework.api.ws import ws_manager
 from osint_framework.core.config import settings
 from osint_framework.core.correlation import Correlator
 from osint_framework.core.logger import logger
+from osint_framework.core.redis_event_bus import redis_event_bus
 from osint_framework.job_queue.job_manager import job_manager
 from osint_framework.job_queue.redis_queue_backend import redis_queue_backend
 from osint_framework.job_queue.worker_pool import WorkerPool
@@ -18,6 +19,7 @@ class CoreEngine:
         self.pool = WorkerPool(concurrency=self.config.engine.threads)
         self.queue = job_manager
         self.distributed_queue = redis_queue_backend
+        self.event_bus = redis_event_bus
         self._background_tasks: set[asyncio.Task] = set()
         self._mode: str = "api"
         self._pool_started = False
@@ -25,6 +27,15 @@ class CoreEngine:
     @property
     def queue_mode(self) -> str:
         return (self.config.queue.mode or "in_process").lower()
+
+    async def _emit_event(self, event: Dict[str, Any]):
+        """Broadcast locally and publish to Redis event bus in distributed mode."""
+        await ws_manager.broadcast(event)
+        if self.queue_mode == "redis":
+            try:
+                await self.event_bus.publish(event)
+            except Exception:
+                logger.exception("Failed to publish Redis event bus message: %s", event)
         
     async def start(self, mode: str = "api"):
         self._mode = mode
@@ -68,7 +79,7 @@ class CoreEngine:
                 "error",
                 error_message=f"No modules available for target type '{target_type}'",
             )
-            await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "error"})
+            await self._emit_event({"type": "job_update", "job_id": job_id, "status": "error"})
             return job_id
 
         await self.queue.set_modules_total(job_id, len(modules))
@@ -76,11 +87,11 @@ class CoreEngine:
         if self.queue_mode == "redis" and self._mode == "api":
             await self.queue.update_job_status(job_id, "queued")
             await self.distributed_queue.enqueue(job_id)
-            await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "queued"})
+            await self._emit_event({"type": "job_update", "job_id": job_id, "status": "queued"})
             return job_id
 
         await self.queue.update_job_status(job_id, "running")
-        await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "running"})
+        await self._emit_event({"type": "job_update", "job_id": job_id, "status": "running"})
 
         # Start background processing and keep a reference to surface exceptions.
         task = asyncio.create_task(self._execute_scan(job_id, target, modules))
@@ -111,7 +122,7 @@ class CoreEngine:
 
         await self.queue.set_modules_total(job_id, len(modules))
         await self.queue.update_job_status(job_id, "running")
-        await ws_manager.broadcast({"type": "job_update", "job_id": job_id, "status": "running"})
+        await self._emit_event({"type": "job_update", "job_id": job_id, "status": "running"})
         await self._execute_scan(job_id, target, modules)
 
     def _on_background_task_done(self, task: asyncio.Task):
@@ -184,7 +195,7 @@ class CoreEngine:
 
             await self.queue.set_correlated_intel(job_id, correlated)
             await self.queue.update_job_status(job_id, "completed")
-            await ws_manager.broadcast(
+            await self._emit_event(
                 {"type": "job_update", "job_id": job_id, "status": "completed"}
             )
             logger.info(f"Job {job_id} finished execution.")
@@ -194,7 +205,7 @@ class CoreEngine:
         except Exception as exc:
             logger.exception("Job %s failed during execution", job_id)
             await self.queue.update_job_status(job_id, "error", error_message=str(exc))
-            await ws_manager.broadcast(
+            await self._emit_event(
                 {
                     "type": "job_update",
                     "job_id": job_id,
@@ -206,7 +217,7 @@ class CoreEngine:
     async def _broadcast_module_progress(self, job_id: str, mod_name: str):
         job = await self.queue.get_job(job_id)
         if job:
-            await ws_manager.broadcast({
+            await self._emit_event({
                 "type": "module_result",
                 "job_id": job_id,
                 "module": mod_name,
