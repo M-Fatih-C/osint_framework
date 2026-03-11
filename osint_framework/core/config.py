@@ -117,7 +117,12 @@ class VisionIntegrationConfig(BaseModel):
     max_upload_mb: int = 15
     reverse_max_results: int = 30
     scraper_max_pages: int = 8
-    enable_embedding: bool = False
+    enable_embedding: bool = True
+    enable_similarity_search: bool = True
+    similarity_min_score: float = 0.82
+    similarity_top_k: int = 5
+    similarity_index_path: str = "osint_framework/data/vision/face_similarity_index.json"
+    similarity_max_items: int = 5000
 
 
 class IntegrationsConfig(BaseModel):
@@ -253,6 +258,33 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         vision_data["enable_embedding"] = os.getenv(
             "OSINT_VISION_ENABLE_EMBEDDING", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("OSINT_VISION_ENABLE_SIMILARITY") is not None:
+        vision_data["enable_similarity_search"] = os.getenv(
+            "OSINT_VISION_ENABLE_SIMILARITY", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("OSINT_VISION_SIMILARITY_MIN_SCORE"):
+        try:
+            vision_data["similarity_min_score"] = float(
+                os.getenv("OSINT_VISION_SIMILARITY_MIN_SCORE", "0.82")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_SIMILARITY_TOP_K"):
+        try:
+            vision_data["similarity_top_k"] = int(
+                os.getenv("OSINT_VISION_SIMILARITY_TOP_K", "5")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_SIMILARITY_INDEX_PATH"):
+        vision_data["similarity_index_path"] = os.getenv("OSINT_VISION_SIMILARITY_INDEX_PATH")
+    if os.getenv("OSINT_VISION_SIMILARITY_MAX_ITEMS"):
+        try:
+            vision_data["similarity_max_items"] = int(
+                os.getenv("OSINT_VISION_SIMILARITY_MAX_ITEMS", "5000")
+            )
+        except ValueError:
+            pass
 
     return AppConfig(**data)
 

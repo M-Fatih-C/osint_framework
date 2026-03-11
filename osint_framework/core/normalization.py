@@ -463,6 +463,60 @@ class IntelNormalizer:
                     )
                 self._link_url_domain(hit_url, source_module=module_name, evidence_id=evidence_id)
 
+            for match in (data.get("similarity_matches") or [])[:200]:
+                if not isinstance(match, dict):
+                    continue
+                source_face_ref = str(match.get("face_ref") or "")
+                source_face_id = face_map.get(source_face_ref)
+                source_entity_id = source_face_id or image_entity_id or root_entity_id
+                if not source_entity_id:
+                    continue
+
+                matched_image = match.get("matched_image_path")
+                if not isinstance(matched_image, str) or not matched_image.strip():
+                    continue
+
+                score = float(match.get("score") or 0.0)
+                confidence = max(0.0, min(1.0, score))
+                matched_image_id = self.add_entity(
+                    "image",
+                    matched_image,
+                    source_module=module_name,
+                    confidence=confidence,
+                    attributes={
+                        "match_id": match.get("match_id"),
+                        "matched_provider": match.get("matched_provider"),
+                        "matched_created_at": match.get("matched_created_at"),
+                        "matched_source": match.get("matched_source"),
+                    },
+                )
+                self.add_relation(
+                    "similar_to_image",
+                    source_entity_id,
+                    matched_image_id,
+                    source_module=module_name,
+                    confidence=confidence,
+                    evidence_id=evidence_id,
+                )
+
+                matched_face_ref = match.get("matched_face_ref")
+                if isinstance(matched_face_ref, str) and matched_face_ref.strip():
+                    matched_face_id = self.add_entity(
+                        "face_reference",
+                        f"{matched_image}#{matched_face_ref}",
+                        display=matched_face_ref,
+                        source_module=module_name,
+                        confidence=confidence,
+                    )
+                    self.add_relation(
+                        "similar_to_face_reference",
+                        source_entity_id,
+                        matched_face_id,
+                        source_module=module_name,
+                        confidence=confidence,
+                        evidence_id=evidence_id,
+                    )
+
             for item in (data.get("entities") or [])[:200]:
                 if not isinstance(item, dict):
                     continue
@@ -690,7 +744,7 @@ class IntelNormalizer:
 
     def _canonicalize(self, entity_type: str, value: str) -> str:
         value = value.strip()
-        if entity_type in {"email", "domain", "url", "username", "search_url", "image"}:
+        if entity_type in {"email", "domain", "url", "username", "search_url", "image", "face_reference"}:
             return value.lower()
         if entity_type in {"username_candidate", "email_local_part_candidate"}:
             return value.lower()

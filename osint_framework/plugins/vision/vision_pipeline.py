@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from osint_framework.core.config import settings
@@ -13,6 +13,7 @@ from osint_framework.plugins.vision.face_detector import VisionFaceDetector
 from osint_framework.plugins.vision.face_embedding import FaceEmbeddingExtractor
 from osint_framework.plugins.vision.osint_scraper import VisionOsintScraper
 from osint_framework.plugins.vision.reverse_search import ReverseImageSearcher
+from osint_framework.plugins.vision.similarity_search import FaceSimilaritySearcher
 
 
 class ResolveImageStage:
@@ -151,8 +152,73 @@ class FaceEmbeddingStage:
 
     async def run(self, context: PipelineContext) -> None:
         faces = context.data.get("faces") or []
-        image_paths = [str(face.get("crop_path")) for face in faces if isinstance(face, dict) and face.get("crop_path")]
-        context.data["embedding"] = self.embedder.extract(image_paths)
+        face_inputs = [
+            {
+                "face_ref": str(face.get("face_id") or f"face_{idx + 1}"),
+                "path": str(face.get("crop_path")),
+            }
+            for idx, face in enumerate(faces)
+            if isinstance(face, dict) and face.get("crop_path")
+        ]
+
+        raw_payload = self.embedder.extract(face_inputs, include_vectors=True)
+        context.data["embedding_raw"] = raw_payload
+        context.data["embedding"] = self._sanitize_embedding_output(raw_payload)
+
+    def _sanitize_embedding_output(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = dict(payload or {})
+        cleaned_embeddings: List[Dict[str, Any]] = []
+        for item in (payload.get("embeddings") if isinstance(payload, dict) else []) or []:
+            if not isinstance(item, dict):
+                continue
+            cleaned_embeddings.append({k: v for k, v in item.items() if k != "vector"})
+        sanitized["embeddings"] = cleaned_embeddings
+        return sanitized
+
+
+class FaceSimilarityStage:
+    name = "face_similarity_search"
+
+    def __init__(self):
+        cfg = settings.integrations.vision
+        self.enabled = bool(cfg.enable_similarity_search)
+        self.searcher = FaceSimilaritySearcher(
+            index_path=str(_resolve_similarity_index_path()),
+            min_score=cfg.similarity_min_score,
+            top_k=cfg.similarity_top_k,
+            max_items=cfg.similarity_max_items,
+        )
+
+    async def run(self, context: PipelineContext) -> None:
+        if not self.enabled:
+            context.data["similarity"] = {
+                "status": "skipped",
+                "provider": self.searcher.provider_name,
+                "reason": "similarity disabled",
+                "matches": [],
+                "matches_by_face": [],
+            }
+            return
+
+        embedding_raw = context.data.get("embedding_raw") or {}
+        embeddings = (embedding_raw.get("embeddings") if isinstance(embedding_raw, dict) else []) or []
+
+        if not embeddings:
+            context.data["similarity"] = {
+                "status": "skipped",
+                "provider": self.searcher.provider_name,
+                "reason": "no embeddings",
+                "matches": [],
+                "matches_by_face": [],
+            }
+            return
+
+        similarity = self.searcher.search_and_update(
+            embeddings,
+            current_image_path=str(context.data.get("image_path") or context.target),
+            image_source=context.data.get("image_source"),
+        )
+        context.data["similarity"] = similarity
 
 
 class ReverseSearchStage:
@@ -200,9 +266,9 @@ class ScrapeStage:
 
 class VisionImageOsintModule(BaseModule):
     name = "Vision_Image_OSINT"
-    version = "1.0.0"
+    version = "2.0.0"
     description = (
-        "Image-first OSINT pipeline: face detection/crop, optional embeddings, reverse image search, and URL/entity extraction."
+        "Image-first OSINT pipeline: face detection/crop, embeddings, similarity search, reverse image search, and entity extraction."
     )
     target_types = ["image"]
     author = "OSINT_Framework_Team"
@@ -215,6 +281,7 @@ class VisionImageOsintModule(BaseModule):
                 ResolveImageStage(self),
                 DetectAndCropStage(),
                 FaceEmbeddingStage(),
+                FaceSimilarityStage(),
                 ReverseSearchStage(self),
                 ScrapeStage(self),
             ]
@@ -226,7 +293,7 @@ class VisionImageOsintModule(BaseModule):
         except Exception as exc:
             logger.exception("[%s] Vision pipeline failed: %s", self.name, exc)
             return {
-                "pipeline": "vision_osint_v1",
+                "pipeline": "vision_osint_v2",
                 "status": "error",
                 "image_target": target,
                 "error": str(exc),
@@ -245,9 +312,10 @@ class VisionImageOsintModule(BaseModule):
         scraped = context.data.get("scraped") or {}
         detection = context.data.get("face_detection") or {}
         embedding = context.data.get("embedding") or {}
+        similarity = context.data.get("similarity") or {}
 
         return {
-            "pipeline": "vision_osint_v1",
+            "pipeline": "vision_osint_v2",
             "status": "ok",
             "image_target": context.target,
             "image_source": context.data.get("image_source"),
@@ -260,6 +328,9 @@ class VisionImageOsintModule(BaseModule):
                 "provider_errors": detection.get("provider_errors") or {},
             },
             "embedding": embedding,
+            "similarity": similarity,
+            "similarity_matches_total": similarity.get("matches_total", 0),
+            "similarity_matches": similarity.get("matches") or [],
             "reverse_image_results_total": reverse.get("total_results", 0),
             "reverse_image_results": reverse.get("results") or [],
             "reverse_image_results_by_face": reverse.get("per_face") or [],
@@ -281,6 +352,14 @@ class VisionImageOsintModule(BaseModule):
 
 def _resolve_vision_dir() -> Path:
     configured = settings.integrations.vision.upload_dir
+    path = Path(configured)
+    if path.is_absolute():
+        return path
+    return Path(__file__).resolve().parents[3] / configured
+
+
+def _resolve_similarity_index_path() -> Path:
+    configured = settings.integrations.vision.similarity_index_path
     path = Path(configured)
     if path.is_absolute():
         return path

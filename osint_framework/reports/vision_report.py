@@ -28,10 +28,25 @@ class VisionReportBuilder:
             seen.add(key)
             links.append(url)
 
+        similarity_matches = data.get("similarity_matches") or []
+        compact_similarity = []
+        for item in similarity_matches[:10]:
+            if not isinstance(item, dict):
+                continue
+            compact_similarity.append(
+                {
+                    "score": item.get("score"),
+                    "matched_image_path": item.get("matched_image_path"),
+                    "matched_face_ref": item.get("matched_face_ref"),
+                }
+            )
+
         return {
             "target": job_data.get("target"),
             "target_type": job_data.get("target_type"),
             "faces_detected": int(data.get("faces_detected") or 0),
+            "similarity_matches_total": int(data.get("similarity_matches_total") or 0),
+            "similarity_matches": compact_similarity,
             "reverse_image_results": links,
             "entities": data.get("entities") or [],
             "status": data.get("status") or "unknown",

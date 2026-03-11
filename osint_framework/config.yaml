@@ -89,4 +89,9 @@ integrations:
     max_upload_mb: 15
     reverse_max_results: 30
     scraper_max_pages: 8
-    enable_embedding: false
+    enable_embedding: true
+    enable_similarity_search: true
+    similarity_min_score: 0.82
+    similarity_top_k: 5
+    similarity_index_path: osint_framework/data/vision/face_similarity_index.json
+    similarity_max_items: 5000

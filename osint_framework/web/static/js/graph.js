@@ -193,18 +193,39 @@ class IntelligenceGraph {
             }
             else if (moduleName === 'Vision_Image_OSINT') {
                 const faces = Array.isArray(data.faces) ? data.faces : [];
+                const faceNodeByRef = {};
                 const faceLimit = Math.min(6, faces.length);
                 for (let i = 0; i < faceLimit; i++) {
                     const face = faces[i] || {};
+                    const faceRef = face.face_id || `Face ${i + 1}`;
                     const faceId = `face_${index}_${i}`;
+                    faceNodeByRef[String(faceRef)] = faceId;
                     this._addNode({
                         id: faceId,
-                        label: face.face_id || `Face ${i + 1}`,
+                        label: faceRef,
                         shape: 'diamond',
                         color: { background: '#f97316', border: '#c2410c' },
                         title: Array.isArray(face.bbox) ? `bbox: ${face.bbox.join(', ')}` : 'Detected face region'
                     });
                     this.edges.add({ from: moduleId, to: faceId });
+                }
+
+                const similarityHits = Array.isArray(data.similarity_matches) ? data.similarity_matches : [];
+                const simLimit = Math.min(8, similarityHits.length);
+                for (let i = 0; i < simLimit; i++) {
+                    const match = similarityHits[i] || {};
+                    const score = Number(match.score || 0);
+                    const simNodeId = `vision_sim_${index}_${i}`;
+                    this._addNode({
+                        id: simNodeId,
+                        label: `${Math.round(score * 100)}% Similar`,
+                        shape: 'ellipse',
+                        color: { background: '#9333ea', border: '#7e22ce' },
+                        title: match.matched_image_path || match.matched_face_ref || 'Similarity match'
+                    });
+
+                    const fromFaceId = faceNodeByRef[String(match.face_ref || '')] || moduleId;
+                    this.edges.add({ from: fromFaceId, to: simNodeId, color: { color: '#a855f7' }, dashes: true });
                 }
 
                 const reverseHits = Array.isArray(data.reverse_image_results) ? data.reverse_image_results : [];

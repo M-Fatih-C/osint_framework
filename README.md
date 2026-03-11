@@ -357,11 +357,11 @@ osint_framework/venv/bin/python -m unittest discover -s tests -v
 
 Bu araç yalnızca yetkili güvenlik araştırmaları ve etik kullanım için tasarlanmıştır.
 
-## Vision OSINT (V1)
+## Vision OSINT (V2)
 
-Yeni `image` target tipi eklendi. V1 pipeline akışı:
+Yeni `image` target tipi için V2 pipeline aktif:
 
-`image -> face detection -> face crop -> reverse image search -> result URLs -> lightweight entity extraction`
+`image -> face detection -> face crop -> face embedding -> similarity search -> reverse image search -> result URLs -> entity extraction`
 
 ### API Kullanımı
 
@@ -381,6 +381,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/scan \
   -d '{"target":"https://example.com/suspect.jpg","target_type":"image"}'
 ```
 
+### Similarity Search
+
+V2 ile yüz embedding'leri yerel similarity index'e yazılır ve yeni taramalarda benzer yüzler eşleştirilir.
+
+- Match metriği: cosine similarity
+- Çıktı alanları: `similarity`, `similarity_matches_total`, `similarity_matches`
+- Index varsayılanı: `osint_framework/data/vision/face_similarity_index.json`
+
 ### Vision Ayarları
 
 `config.yaml` veya environment üzerinden:
@@ -390,7 +398,12 @@ curl -X POST http://127.0.0.1:8000/api/v1/scan \
 - `OSINT_VISION_MAX_UPLOAD_MB`
 - `OSINT_VISION_REVERSE_MAX_RESULTS`
 - `OSINT_VISION_SCRAPER_MAX_PAGES`
-- `OSINT_VISION_ENABLE_EMBEDDING` (V2 hazırlığı, varsayılan kapalı)
+- `OSINT_VISION_ENABLE_EMBEDDING`
+- `OSINT_VISION_ENABLE_SIMILARITY`
+- `OSINT_VISION_SIMILARITY_MIN_SCORE`
+- `OSINT_VISION_SIMILARITY_TOP_K`
+- `OSINT_VISION_SIMILARITY_INDEX_PATH`
+- `OSINT_VISION_SIMILARITY_MAX_ITEMS`
 - `GOOGLE_VISION_API_KEY` (otomatik reverse-image URL keşfi için opsiyonel)
 
-Not: API anahtarı yoksa sistem fallback pivot-search URL'leri üretir ve pipeline çalışmaya devam eder.
+Not: `deepface` yoksa embedding aşaması deterministic descriptor fallback ile devam eder; pipeline kırılmaz.

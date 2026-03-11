@@ -28,6 +28,7 @@ from osint_framework.core.config import JWTUserConfig
 from osint_framework.plugins.base import BaseModule
 from osint_framework.plugins.person.username import UsernameModule
 from osint_framework.plugins.registry import registry
+from osint_framework.plugins.vision.similarity_search import FaceSimilaritySearcher
 from osint_framework.reports.ai_summary import ai_reporter
 
 
@@ -146,6 +147,15 @@ class CorrelationNormalizationTests(unittest.TestCase):
                     "reverse_image_results": [
                         {"face_id": "face_1", "url": "https://example.com/profile/john", "provider": "pivot"}
                     ],
+                    "similarity_matches": [
+                        {
+                            "face_ref": "face_1",
+                            "score": 0.94,
+                            "matched_image_path": "/tmp/known.jpg",
+                            "matched_face_ref": "face_1",
+                            "matched_provider": "deepface"
+                        }
+                    ],
                     "entities": [
                         {"type": "username", "value": "john_doe", "source_url": "https://example.com/profile/john"}
                     ],
@@ -163,6 +173,57 @@ class CorrelationNormalizationTests(unittest.TestCase):
         self.assertIn("url", entity_types)
         self.assertIn("contains_face", relation_types)
         self.assertIn("reverse_image_hit", relation_types)
+        self.assertIn("similar_to_image", relation_types)
+        self.assertIn("similar_to_face_reference", relation_types)
+
+
+class VisionSimilarityTests(unittest.TestCase):
+    def test_similarity_index_matches_second_similar_face(self):
+        with tempfile.TemporaryDirectory(prefix="vision_sim_") as tmpdir:
+            index_path = os.path.join(tmpdir, "face_similarity_index.json")
+            searcher = FaceSimilaritySearcher(
+                index_path=index_path,
+                min_score=0.8,
+                top_k=3,
+                max_items=100,
+            )
+
+            first = searcher.search_and_update(
+                embeddings=[
+                    {
+                        "face_ref": "face_1",
+                        "dimension": 4,
+                        "vector": [1.0, 0.0, 0.0, 0.0],
+                        "vector_sha256_head": "a1",
+                        "provider": "unit",
+                    }
+                ],
+                current_image_path="/tmp/a.jpg",
+                image_source="path",
+            )
+            self.assertEqual(first["status"], "ok")
+            self.assertEqual(first["matches_total"], 0)
+            self.assertEqual(first["indexed_count"], 1)
+
+            second = searcher.search_and_update(
+                embeddings=[
+                    {
+                        "face_ref": "face_1",
+                        "dimension": 4,
+                        "vector": [0.99, 0.01, 0.0, 0.0],
+                        "vector_sha256_head": "b1",
+                        "provider": "unit",
+                    }
+                ],
+                current_image_path="/tmp/b.jpg",
+                image_source="path",
+            )
+            self.assertEqual(second["status"], "ok")
+            self.assertGreaterEqual(second["matches_total"], 1)
+            top = second["matches"][0]
+            self.assertEqual(top["matched_image_path"], "/tmp/a.jpg")
+            self.assertGreater(top["score"], 0.9)
+
 
 class ApiBehaviorTests(unittest.TestCase):
     def test_importable_app_and_phone_target_is_listed(self):

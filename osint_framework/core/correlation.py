@@ -25,6 +25,7 @@ class Correlator:
         extracted_emails = set()
         extracted_domains = set()
         extracted_ips = set()
+        extracted_similarity_matches = 0
 
         for result in results:
             mod_name = result.get("module")
@@ -44,8 +45,8 @@ class Correlator:
             emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text_repr)
             extracted_emails.update(emails)
 
-            # Extract Domains (simplified)
-            # A real implementation would use tldextract
+            if mod_name == "Vision_Image_OSINT" and isinstance(data, dict):
+                extracted_similarity_matches += len(data.get("similarity_matches") or [])
 
         normalized = IntelNormalizer.build(
             results,
@@ -55,6 +56,8 @@ class Correlator:
 
         # Enrich counters from normalized graph.
         normalized_entities = normalized.get("entities") or []
+        normalized_relations = normalized.get("relations") or []
+
         normalized_domains = {
             ent.get("value")
             for ent in normalized_entities
@@ -80,10 +83,19 @@ class Correlator:
             for ent in normalized_entities
             if ent.get("type") == "image" and ent.get("value")
         }
+        normalized_similarity_edges = [
+            rel
+            for rel in normalized_relations
+            if rel.get("type") in {"similar_to_image", "similar_to_face_reference"}
+        ]
 
         extracted_domains.update(normalized_domains)
         extracted_emails.update(normalized_emails)
         extracted_ips.update(normalized_ips)
+        extracted_similarity_matches = max(
+            extracted_similarity_matches,
+            len(normalized_similarity_edges),
+        )
 
         logger.debug(
             "Correlator found %d emails, %d IPs, %d domains, %d faces and built %d normalized entities.",
@@ -102,6 +114,7 @@ class Correlator:
                 "domains_found": list(extracted_domains),
                 "faces_found": list(normalized_faces),
                 "images_found": list(normalized_images),
+                "similarity_matches_found": extracted_similarity_matches,
             },
             "normalized": normalized,
         }
