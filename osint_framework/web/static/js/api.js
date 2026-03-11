@@ -52,6 +52,26 @@ const ApiService = {
         }
     },
 
+    async startImageScan(file, caseId = null) {
+        try {
+            const form = new FormData();
+            form.append('file', file);
+            if (Number.isInteger(caseId)) {
+                form.append('case_id', String(caseId));
+            }
+
+            const res = await fetch(`${API_BASE}/scan/image`, {
+                method: 'POST',
+                body: form,
+            });
+            if (!res.ok) throw new Error(await parseApiError(res));
+            return await res.json();
+        } catch (err) {
+            console.error("Start Image Scan Error:", err);
+            throw err;
+        }
+    },
+
     async getSystemStatus() {
         try {
             const res = await fetch(`${API_BASE}/status`);

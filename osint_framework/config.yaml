@@ -83,3 +83,10 @@ integrations:
     no_color: true
     no_recursion: true
     no_extracting: true
+  vision:
+    enabled: true
+    upload_dir: osint_framework/data/vision/uploads
+    max_upload_mb: 15
+    reverse_max_results: 30
+    scraper_max_pages: 8
+    enable_embedding: false

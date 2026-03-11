@@ -4,6 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetInput = document.getElementById('targetInput');
     const targetType = document.getElementById('targetType');
     const targetHint = document.getElementById('targetHint');
+    const targetTextGroup = document.getElementById('targetTextGroup');
+    const imageInputGroup = document.getElementById('imageInputGroup');
+    const imageInput = document.getElementById('imageInput');
     const caseSelect = document.getElementById('caseSelect');
     const caseHint = document.getElementById('caseHint');
     const refreshCasesBtn = document.getElementById('refreshCasesBtn');
@@ -81,6 +84,10 @@ document.addEventListener('DOMContentLoaded', () => {
             placeholder: 'e.g. Muhammet Fatih Cetintas',
             hint: 'Use a real full name (ad soyad). This mode generates person-name OSINT pivots (queries, name variants, username candidates).'
         },
+        image: {
+            placeholder: 'Select an image file',
+            hint: 'Upload an image to run Vision OSINT pipeline (face detection, reverse-image pivots, and entity extraction).'
+        },
         username: {
             placeholder: 'e.g. fatihcetin',
             hint: 'Username scans expect a handle (letters, numbers, ., _, -) without spaces. Full names are not supported here.'
@@ -97,18 +104,38 @@ document.addEventListener('DOMContentLoaded', () => {
     if (scanForm) {
         scanForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const target = targetInput.value.trim();
             const type = targetType.value;
-            if (!target) return;
+            const isImageMode = type === 'image';
+            const imageFile = isImageMode && imageInput && imageInput.files && imageInput.files.length > 0
+                ? imageInput.files[0]
+                : null;
+            const target = isImageMode ? (imageFile ? imageFile.name : '') : targetInput.value.trim();
 
-            const validationError = validateInputBeforeSubmit(target, type);
+            if (!target) {
+                if (isImageMode && imageInput) {
+                    imageInput.setCustomValidity('Please select an image file.');
+                    imageInput.reportValidity();
+                }
+                return;
+            }
+
+            const validationError = isImageMode
+                ? validateImageBeforeSubmit(imageFile)
+                : validateInputBeforeSubmit(target, type);
+
             if (validationError) {
-                targetInput.setCustomValidity(validationError);
-                targetInput.reportValidity();
+                if (isImageMode && imageInput) {
+                    imageInput.setCustomValidity(validationError);
+                    imageInput.reportValidity();
+                } else {
+                    targetInput.setCustomValidity(validationError);
+                    targetInput.reportValidity();
+                }
                 logTerminal(`[System] ${validationError}`, "error");
                 return;
             }
             targetInput.setCustomValidity('');
+            if (imageInput) imageInput.setCustomValidity('');
 
             resetDashboard();
             setLoading(true);
@@ -117,7 +144,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 const selectedCaseId = getSelectedCaseId();
-                const res = await ApiService.startScan(target, type, selectedCaseId);
+                const res = isImageMode
+                    ? await ApiService.startImageScan(imageFile, selectedCaseId)
+                    : await ApiService.startScan(target, type, selectedCaseId);
+
                 currentJobId = res.job_id;
                 finalizedJobId = null;
                 displayJobId.textContent = currentJobId;
@@ -136,7 +166,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 progressText.textContent = 'Starting engines...';
 
                 startPolling(currentJobId);
-
             } catch (err) {
                 logTerminal(`[System] Failed to start scan: ${toFriendlySubmitError(err.message, type)}`, "error");
                 setLoading(false);
@@ -170,6 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
         syncStatusBadges();
         targetType?.addEventListener('change', applyTargetInputMeta);
         targetInput?.addEventListener('input', () => targetInput.setCustomValidity(''));
+        imageInput?.addEventListener("change", () => imageInput.setCustomValidity(""));
         caseSelect?.addEventListener('change', async () => {
             currentCaseId = getSelectedCaseId();
             setCaseCreateStatus(currentCaseId ? `Selected Case #${currentCaseId}.` : 'No case selected. Scans will run ad-hoc.');
@@ -243,10 +273,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const modules = await ApiService.getModules();
         if (!Array.isArray(modules) || modules.length === 0) return;
 
-        const preferredOrder = ['domain', 'ip', 'email', 'person_name', 'username', 'phone'];
+        const preferredOrder = ['domain', 'ip', 'email', 'person_name', 'image', 'username', 'phone'];
         const targetLabels = {
             ip: 'IP Address',
-            person_name: 'Person Name'
+            person_name: 'Person Name',
+            image: 'Image',
         };
         const discoveredTypes = [...new Set(
             modules.flatMap(m => Array.isArray(m.target_types) ? m.target_types : [])
@@ -588,12 +619,28 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!targetType || !targetInput) return;
         const type = targetType.value;
         const meta = TARGET_INPUT_META[type];
+        const isImageMode = type === 'image';
         if (!meta) return;
 
-        targetInput.placeholder = meta.placeholder;
-        if (targetHint) {
-            targetHint.textContent = meta.hint;
+        if (targetTextGroup) {
+            targetTextGroup.classList.toggle('hidden', isImageMode);
         }
+        if (imageInputGroup) {
+            imageInputGroup.classList.toggle('hidden', !isImageMode);
+        }
+
+        targetInput.required = !isImageMode;
+        if (imageInput) {
+            imageInput.required = isImageMode;
+        }
+
+        if (!isImageMode) {
+            targetInput.placeholder = meta.placeholder;
+            if (targetHint) {
+                targetHint.textContent = meta.hint;
+            }
+        }
+
         if (caseHint) {
             caseHint.textContent = currentCaseId
                 ? `This scan will be attached to Case #${currentCaseId}.`
@@ -617,6 +664,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (!/^[A-Za-z0-9._-]{2,64}$/.test(target)) {
             return 'Invalid username format. Use a handle like fatihcetin (letters, numbers, ., _, -).';
+        }
+        return '';
+    }
+
+    function validateImageBeforeSubmit(file) {
+        if (!file) {
+            return 'Please select an image file.';
+        }
+        const name = String(file.name || '').toLowerCase();
+        if (!/\.(jpe?g|png|webp|bmp|gif|tiff?)$/.test(name)) {
+            return 'Unsupported image format. Use JPG/PNG/WEBP/BMP/GIF/TIFF.';
+        }
+        const maxBytes = 15 * 1024 * 1024;
+        if (Number(file.size || 0) > maxBytes) {
+            return 'Image size exceeds 15 MB upload limit.';
         }
         return '';
     }
@@ -722,6 +784,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 quickLinks.forEach(entry => {
                     if (entry?.google) addLink(entry.google, `${entry.label || 'Query'} (Google)`, moduleName);
                     if (entry?.bing) addLink(entry.bing, `${entry.label || 'Query'} (Bing)`, moduleName);
+                });
+            }
+
+            if (moduleName === 'Vision_Image_OSINT') {
+                const reverseHits = Array.isArray(data.reverse_image_results) ? data.reverse_image_results : [];
+                reverseHits.forEach((hit, idx) => {
+                    if (!hit || typeof hit !== 'object') return;
+                    addLink(hit.url, `Vision Hit #${idx + 1}`, moduleName);
+                });
+
+                const resultUrls = Array.isArray(data.result_urls) ? data.result_urls : [];
+                resultUrls.forEach((url, idx) => {
+                    addLink(url, `Vision URL #${idx + 1}`, moduleName);
                 });
             }
 

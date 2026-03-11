@@ -43,3 +43,6 @@ osintdb.db
 # Editors
 .vscode/
 .idea/
+
+# Vision runtime artifacts
+osint_framework/data/vision/

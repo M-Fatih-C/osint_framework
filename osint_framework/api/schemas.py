@@ -1,7 +1,9 @@
 import ipaddress
+import os
 import re
 import unicodedata
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -11,6 +13,8 @@ DOMAIN_RE = re.compile(
 )
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{2,64}$")
 PHONE_RE = re.compile(r"^\+?[0-9][0-9\-\s()]{5,24}$")
+IMAGE_EXT_RE = re.compile(r"\.(?:jpe?g|png|webp|bmp|gif|tiff?)$", re.IGNORECASE)
+
 
 class ScanRequest(BaseModel):
     target: str = Field(..., description="The target to scan (e.g., example.com, admin@example.com)")
@@ -19,9 +23,9 @@ class ScanRequest(BaseModel):
         ge=1,
         description="Optional case ID to associate this scan/job with.",
     )
-    target_type: Literal["domain", "email", "ip", "username", "phone", "person_name"] = Field(
+    target_type: Literal["domain", "email", "ip", "username", "phone", "person_name", "image"] = Field(
         ...,
-        description="Type of target: domain, email, ip, username, phone, or person_name.",
+        description="Type of target: domain, email, ip, username, phone, person_name, or image.",
     )
 
     @field_validator("target")
@@ -62,7 +66,33 @@ class ScanRequest(BaseModel):
                 raise ValueError(
                     "Invalid person name format. Use letters with spaces (e.g. Muhammet Fatih Cetintas)."
                 )
+        elif self.target_type == "image":
+            if not _is_valid_image_target(target):
+                raise ValueError(
+                    "Invalid image target. Use a valid local path or http(s) URL to an image."
+                )
         return self
+
+
+def _is_valid_image_target(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate or len(candidate) > 4096:
+        return False
+
+    if candidate.startswith(("http://", "https://")):
+        parsed = urlparse(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return False
+        # Signed/CDN URLs might not have an extension, so host+path validity is enough.
+        return bool(parsed.path and parsed.path != "/") or bool(parsed.query)
+
+    if candidate.startswith("file://"):
+        candidate = candidate[7:]
+
+    if os.path.exists(candidate):
+        return True
+
+    return bool(IMAGE_EXT_RE.search(candidate))
 
 
 def _is_valid_person_name(value: str) -> bool:

@@ -191,6 +191,49 @@ class IntelligenceGraph {
                     this.edges.add({ from: moduleId, to: dorkId });
                 }
             }
+            else if (moduleName === 'Vision_Image_OSINT') {
+                const faces = Array.isArray(data.faces) ? data.faces : [];
+                const faceLimit = Math.min(6, faces.length);
+                for (let i = 0; i < faceLimit; i++) {
+                    const face = faces[i] || {};
+                    const faceId = `face_${index}_${i}`;
+                    this._addNode({
+                        id: faceId,
+                        label: face.face_id || `Face ${i + 1}`,
+                        shape: 'diamond',
+                        color: { background: '#f97316', border: '#c2410c' },
+                        title: Array.isArray(face.bbox) ? `bbox: ${face.bbox.join(', ')}` : 'Detected face region'
+                    });
+                    this.edges.add({ from: moduleId, to: faceId });
+                }
+
+                const reverseHits = Array.isArray(data.reverse_image_results) ? data.reverse_image_results : [];
+                const hitLimit = Math.min(12, reverseHits.length);
+                for (let i = 0; i < hitLimit; i++) {
+                    const hit = reverseHits[i] || {};
+                    const hitNodeId = `vision_hit_${index}_${i}`;
+                    this._addNode({
+                        id: hitNodeId,
+                        label: hit.title || `Hit ${i + 1}`,
+                        shape: 'box',
+                        color: { background: '#0ea5e9', border: '#0369a1' },
+                        url: hit.url || null,
+                        title: hit.url || hit.title || 'Reverse image result'
+                    });
+                    this.edges.add({ from: moduleId, to: hitNodeId });
+                }
+
+                if (reverseHits.length > hitLimit) {
+                    const moreId = `vision_hit_${index}_more`;
+                    this._addNode({
+                        id: moreId,
+                        label: `+${reverseHits.length - hitLimit} more...`,
+                        shape: 'text',
+                        font: { color: '#8b949e' }
+                    });
+                    this.edges.add({ from: moduleId, to: moreId, dashes: true });
+                }
+            }
             // Add other modules here generically
             else {
                 const infoId = `gen_${index}`;

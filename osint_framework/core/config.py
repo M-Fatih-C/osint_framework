@@ -1,13 +1,16 @@
-import yaml
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List, Optional
 import os
+from pathlib import Path
+from typing import List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
+
 
 class EngineConfig(BaseModel):
     threads: int = 20
     timeout: int = 15
     retries: int = 3
+
 
 class CacheConfig(BaseModel):
     enabled: bool = True
@@ -15,14 +18,17 @@ class CacheConfig(BaseModel):
     url: Optional[str] = None
     ttl: str = "24h"
 
+
 class DatabaseConfig(BaseModel):
     url: str
+
 
 class ProxyConfig(BaseModel):
     enabled: bool = False
     rotation: str = "round_robin"
     list_file: Optional[str] = None
     types: List[str] = Field(default_factory=lambda: ["http"])
+
 
 class ApiConfig(BaseModel):
     rate_limit: str = "100/minute"
@@ -43,6 +49,7 @@ class QueueConfig(BaseModel):
     stale_job_recovery_on_worker_start: bool = True
     stale_job_recovery_action: str = "requeue"  # requeue | error
     enabled_for_api: bool = True
+
 
 class JWTUserConfig(BaseModel):
     username: str
@@ -80,6 +87,7 @@ class SecurityConfig(BaseModel):
     audit_logging: bool = True
     jwt: JWTSecurityConfig = Field(default_factory=JWTSecurityConfig)
 
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     file: Optional[str] = None
@@ -103,8 +111,19 @@ class MaigretIntegrationConfig(BaseModel):
     no_extracting: bool = True
 
 
+class VisionIntegrationConfig(BaseModel):
+    enabled: bool = True
+    upload_dir: str = "osint_framework/data/vision/uploads"
+    max_upload_mb: int = 15
+    reverse_max_results: int = 30
+    scraper_max_pages: int = 8
+    enable_embedding: bool = False
+
+
 class IntegrationsConfig(BaseModel):
     maigret: MaigretIntegrationConfig = Field(default_factory=MaigretIntegrationConfig)
+    vision: VisionIntegrationConfig = Field(default_factory=VisionIntegrationConfig)
+
 
 class AppConfig(BaseModel):
     engine: EngineConfig = Field(default_factory=EngineConfig)
@@ -119,6 +138,7 @@ class AppConfig(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 
+
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     path = Path(config_path)
     if not path.is_absolute() and not path.exists():
@@ -127,7 +147,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             path = package_path
     if not path.exists():
         raise FileNotFoundError(f"Configuration file {config_path} not found.")
-    
+
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
@@ -198,8 +218,44 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             logging_data["backup_count"] = int(os.getenv("OSINT_LOG_BACKUP_COUNT", "5"))
         except ValueError:
             pass
-        
+
+    integrations_data = data.setdefault("integrations", {})
+    vision_data = integrations_data.setdefault("vision", {})
+    if os.getenv("OSINT_VISION_ENABLED") is not None:
+        vision_data["enabled"] = os.getenv("OSINT_VISION_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if os.getenv("OSINT_VISION_UPLOAD_DIR"):
+        vision_data["upload_dir"] = os.getenv("OSINT_VISION_UPLOAD_DIR")
+    if os.getenv("OSINT_VISION_MAX_UPLOAD_MB"):
+        try:
+            vision_data["max_upload_mb"] = int(os.getenv("OSINT_VISION_MAX_UPLOAD_MB", "15"))
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_REVERSE_MAX_RESULTS"):
+        try:
+            vision_data["reverse_max_results"] = int(
+                os.getenv("OSINT_VISION_REVERSE_MAX_RESULTS", "30")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_SCRAPER_MAX_PAGES"):
+        try:
+            vision_data["scraper_max_pages"] = int(
+                os.getenv("OSINT_VISION_SCRAPER_MAX_PAGES", "8")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_ENABLE_EMBEDDING") is not None:
+        vision_data["enable_embedding"] = os.getenv(
+            "OSINT_VISION_ENABLE_EMBEDDING", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
     return AppConfig(**data)
+
 
 # Singleton configuration instance
 try:

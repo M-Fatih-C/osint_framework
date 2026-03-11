@@ -38,15 +38,22 @@
                                 <option value="ip">IP Address</option>
                                 <option value="email">Email</option>
                                 <option value="person_name">Person Name</option>
+                                <option value="image">Image</option>
                                 <option value="username">Username</option>
                                 <option value="phone">Phone</option>
                             </select>
                         </div>
 
-                        <div class="input-group">
+                        <div class="input-group" id="targetTextGroup">
                             <label for="targetInput">Target</label>
                             <input type="text" id="targetInput" placeholder="e.g. example.com" required autocomplete="off">
                             <small class="input-help" id="targetHint">For username scans, enter a handle (no spaces), not a full name.</small>
+                        </div>
+
+                        <div class="input-group hidden" id="imageInputGroup">
+                            <label for="imageInput">Image File</label>
+                            <input type="file" id="imageInput" accept="image/*">
+                            <small class="input-help" id="imageHint">Upload JPG/PNG/WEBP/BMP/GIF image for Vision OSINT pipeline.</small>
                         </div>
 
                         <div class="input-group">

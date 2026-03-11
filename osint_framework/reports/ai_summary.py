@@ -37,6 +37,12 @@ class AIReportGenerator:
                 key_findings[mod_name] = f"Found {data.get('total_found', 0)} subdomains"
             elif mod_name == "Username_Checker":
                 key_findings[mod_name] = f"Found on {data.get('found_on', 0)} platforms"
+            elif mod_name == "Vision_Image_OSINT":
+                key_findings[mod_name] = (
+                    f"Faces: {data.get('faces_detected', 0)}, "
+                    f"Reverse links: {data.get('reverse_image_results_total', 0)}, "
+                    f"Entities: {len(data.get('entities', []))}"
+                )
             elif mod_name == "GeoIP":
                 key_findings[mod_name] = f"{data.get('city')}, {data.get('country')} (ISP: {data.get('isp')})"
             else:

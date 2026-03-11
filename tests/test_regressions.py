@@ -57,6 +57,11 @@ class SchemaValidationTests(unittest.TestCase):
         self.assertEqual(req.target, "Muhammet Fatih Çetintaş")
         self.assertEqual(req.target_type, "person_name")
 
+    def test_scan_request_accepts_image_target(self):
+        req = ScanRequest(target="https://example.com/photo.jpg", target_type="image")
+        self.assertEqual(req.target, "https://example.com/photo.jpg")
+        self.assertEqual(req.target_type, "image")
+
 
 class CorrelationNormalizationTests(unittest.TestCase):
     def test_correlator_builds_normalized_entities_relations_evidence(self):
@@ -129,6 +134,36 @@ class CorrelationNormalizationTests(unittest.TestCase):
         self.assertGreaterEqual(len(evidence), 4)
 
 
+
+    def test_correlator_normalizes_vision_entities(self):
+        results = [
+            {
+                "module": "Vision_Image_OSINT",
+                "data": {
+                    "image_target": "/tmp/unit.jpg",
+                    "image_path": "/tmp/unit.jpg",
+                    "faces": [{"face_id": "face_1", "bbox": [0, 0, 10, 10]}],
+                    "reverse_image_results": [
+                        {"face_id": "face_1", "url": "https://example.com/profile/john", "provider": "pivot"}
+                    ],
+                    "entities": [
+                        {"type": "username", "value": "john_doe", "source_url": "https://example.com/profile/john"}
+                    ],
+                },
+            }
+        ]
+
+        correlated = Correlator.analyze(results, target="/tmp/unit.jpg", target_type="image")
+        normalized = correlated.get("normalized") or {}
+        entity_types = {ent.get("type") for ent in (normalized.get("entities") or [])}
+        relation_types = {rel.get("type") for rel in (normalized.get("relations") or [])}
+
+        self.assertIn("image", entity_types)
+        self.assertIn("face", entity_types)
+        self.assertIn("url", entity_types)
+        self.assertIn("contains_face", relation_types)
+        self.assertIn("reverse_image_hit", relation_types)
+
 class ApiBehaviorTests(unittest.TestCase):
     def test_importable_app_and_phone_target_is_listed(self):
         with TestClient(app) as client:
@@ -159,6 +194,16 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertIn("Person_Name_Analyzer", module_names)
         self.assertIn("Person_Name_Handle_Generator", module_names)
         self.assertIn("Person_Name_Search_Dorks", module_names)
+        self.assertIn("Vision_Image_OSINT", module_names)
+
+    def test_image_scan_upload_endpoint(self):
+        with TestClient(app) as client:
+            payload = {"file": ("unit_test.jpg", b"fake-image-bytes", "image/jpeg")}
+            response = client.post("/api/v1/scan/image", files=payload)
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertIn("job_id", body)
+            self.assertIn("status", body)
 
     def test_case_crud_endpoints(self):
         with TestClient(app) as client:

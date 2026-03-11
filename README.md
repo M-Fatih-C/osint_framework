@@ -356,3 +356,41 @@ osint_framework/venv/bin/python -m unittest discover -s tests -v
 ## Yasal Uyarı
 
 Bu araç yalnızca yetkili güvenlik araştırmaları ve etik kullanım için tasarlanmıştır.
+
+## Vision OSINT (V1)
+
+Yeni `image` target tipi eklendi. V1 pipeline akışı:
+
+`image -> face detection -> face crop -> reverse image search -> result URLs -> lightweight entity extraction`
+
+### API Kullanımı
+
+Dosya yükleyerek image scan başlatma:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/scan/image \
+  -F "file=@/absolute/path/suspect.jpg" \
+  -F "case_id=1"
+```
+
+JSON scan endpoint'i `image` target_type ile URL/path de kabul eder:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/scan \
+  -H "Content-Type: application/json" \
+  -d '{"target":"https://example.com/suspect.jpg","target_type":"image"}'
+```
+
+### Vision Ayarları
+
+`config.yaml` veya environment üzerinden:
+
+- `OSINT_VISION_ENABLED`
+- `OSINT_VISION_UPLOAD_DIR`
+- `OSINT_VISION_MAX_UPLOAD_MB`
+- `OSINT_VISION_REVERSE_MAX_RESULTS`
+- `OSINT_VISION_SCRAPER_MAX_PAGES`
+- `OSINT_VISION_ENABLE_EMBEDDING` (V2 hazırlığı, varsayılan kapalı)
+- `GOOGLE_VISION_API_KEY` (otomatik reverse-image URL keşfi için opsiyonel)
+
+Not: API anahtarı yoksa sistem fallback pivot-search URL'leri üretir ve pipeline çalışmaya devam eder.

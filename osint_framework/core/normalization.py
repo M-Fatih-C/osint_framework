@@ -382,6 +382,143 @@ class IntelNormalizer:
                         self._link_url_domain(url, source_module=module_name, evidence_id=evidence_id)
             return
 
+        if module_name == "Vision_Image_OSINT":
+            image_target = data.get("image_path") or data.get("image_target")
+            image_entity_id = root_entity_id
+
+            if isinstance(image_target, str) and image_target.strip():
+                image_entity_id = self.add_entity(
+                    "image",
+                    image_target,
+                    source_module=module_name,
+                    confidence=0.95,
+                    attributes={"image_source": data.get("image_source")},
+                )
+                if root_entity_id and image_entity_id != root_entity_id:
+                    self.add_relation(
+                        "investigated_as",
+                        root_entity_id,
+                        image_entity_id,
+                        source_module=module_name,
+                        confidence=0.95,
+                        evidence_id=evidence_id,
+                    )
+
+            face_map: Dict[str, str] = {}
+            for idx, face in enumerate((data.get("faces") or [])[:64]):
+                if not isinstance(face, dict):
+                    continue
+                face_ref = str(face.get("face_id") or f"face_{idx + 1}")
+                face_entity_id = self.add_entity(
+                    "face",
+                    f"{image_target or root_entity_id or 'image'}#{face_ref}",
+                    display=face_ref,
+                    source_module=module_name,
+                    confidence=float(face.get("confidence") or 0.6),
+                    attributes={
+                        "bbox": face.get("bbox"),
+                        "crop_path": face.get("crop_path"),
+                        "crop_status": face.get("crop_status"),
+                    },
+                )
+                face_map[face_ref] = face_entity_id
+                if image_entity_id:
+                    self.add_relation(
+                        "contains_face",
+                        image_entity_id,
+                        face_entity_id,
+                        source_module=module_name,
+                        confidence=0.8,
+                        evidence_id=evidence_id,
+                    )
+
+            for hit in (data.get("reverse_image_results") or [])[:300]:
+                if not isinstance(hit, dict):
+                    continue
+                hit_url = hit.get("url")
+                if not isinstance(hit_url, str):
+                    continue
+
+                url_entity_id = self.add_entity(
+                    "url",
+                    hit_url,
+                    source_module=module_name,
+                    confidence=0.82,
+                    attributes={
+                        "provider": hit.get("provider"),
+                        "match_type": hit.get("match_type"),
+                        "title": hit.get("title"),
+                    },
+                )
+                source_face_id = face_map.get(str(hit.get("face_id") or ""))
+                source_entity_id = source_face_id or image_entity_id or root_entity_id
+                if source_entity_id:
+                    self.add_relation(
+                        "reverse_image_hit",
+                        source_entity_id,
+                        url_entity_id,
+                        source_module=module_name,
+                        confidence=0.8,
+                        evidence_id=evidence_id,
+                    )
+                self._link_url_domain(hit_url, source_module=module_name, evidence_id=evidence_id)
+
+            for item in (data.get("entities") or [])[:200]:
+                if not isinstance(item, dict):
+                    continue
+                entity_type = str(item.get("type") or "").strip()
+                entity_value = item.get("value")
+                if not entity_type or not isinstance(entity_value, str) or not entity_value.strip():
+                    continue
+
+                if entity_type not in {
+                    "person_name",
+                    "username",
+                    "email",
+                    "domain",
+                    "url",
+                    "phone",
+                    "ip",
+                }:
+                    continue
+
+                ent_id = self.add_entity(
+                    entity_type,
+                    entity_value,
+                    source_module=module_name,
+                    confidence=0.72,
+                    attributes={k: v for k, v in item.items() if k not in {"type", "value"}},
+                )
+
+                source_url = item.get("source_url")
+                if isinstance(source_url, str) and source_url.strip():
+                    source_url_id = self.add_entity(
+                        "url",
+                        source_url,
+                        source_module=module_name,
+                        confidence=0.7,
+                    )
+                    self.add_relation(
+                        "mentions_entity",
+                        source_url_id,
+                        ent_id,
+                        source_module=module_name,
+                        confidence=0.7,
+                        evidence_id=evidence_id,
+                    )
+                    self._link_url_domain(source_url, source_module=module_name, evidence_id=evidence_id)
+
+                pivot_from = image_entity_id or root_entity_id
+                if pivot_from:
+                    self.add_relation(
+                        "possible_identity",
+                        pivot_from,
+                        ent_id,
+                        source_module=module_name,
+                        confidence=0.6,
+                        evidence_id=evidence_id,
+                    )
+            return
         if module_name == "Subdomain_Scanner":
             root_domain = data.get("target_domain")
             root_domain_id: Optional[str] = None
@@ -553,7 +690,7 @@ class IntelNormalizer:
 
     def _canonicalize(self, entity_type: str, value: str) -> str:
         value = value.strip()
-        if entity_type in {"email", "domain", "url", "username", "search_url"}:
+        if entity_type in {"email", "domain", "url", "username", "search_url", "image"}:
             return value.lower()
         if entity_type in {"username_candidate", "email_local_part_candidate"}:
             return value.lower()

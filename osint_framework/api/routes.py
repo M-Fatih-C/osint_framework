@@ -1,5 +1,11 @@
-from fastapi import APIRouter, HTTPException, Request
+import datetime
+import re
+import uuid
+from pathlib import Path
 from typing import List, Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+
 from osint_framework.api.schemas import (
     AuditLogListResponse,
     AuthMeResponse,
@@ -21,9 +27,69 @@ from osint_framework.api.schemas import (
 from osint_framework.core.audit import audit_logger
 from osint_framework.core.auth import authenticate_local_user, issue_access_token, jwt_enabled
 from osint_framework.core.case_manager import case_manager
+from osint_framework.core.config import settings
 from osint_framework.core.engine import engine
+from osint_framework.core.logger import logger
 
 router = APIRouter()
+
+_ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+
+def _resolve_vision_upload_dir() -> Path:
+    configured = settings.integrations.vision.upload_dir
+    base = Path(configured)
+    if base.is_absolute():
+        return base
+    return Path(__file__).resolve().parents[2] / configured
+
+
+def _sanitize_filename(name: str) -> str:
+    stem = Path(name).stem or "image"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return safe or "image"
+
+
+async def _persist_uploaded_image(upload: UploadFile) -> Path:
+    original_name = (upload.filename or "upload.bin").strip()
+    ext = Path(original_name).suffix.lower()
+    if ext not in _ALLOWED_IMAGE_EXTS:
+        raise ValueError(f"Unsupported image extension '{ext or 'none'}'.")
+
+    content_type = (upload.content_type or "").strip().lower()
+    if content_type and not content_type.startswith("image/"):
+        raise ValueError(f"Invalid content type '{content_type}'.")
+
+    upload_dir = _resolve_vision_upload_dir()
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d_%H%M%S")
+    safe_name = _sanitize_filename(original_name)
+    unique = uuid.uuid4().hex[:12]
+    file_name = f"{stamp}_{safe_name}_{unique}{ext}"
+    destination = upload_dir / file_name
+
+    size_limit_mb = max(1, int(settings.integrations.vision.max_upload_mb))
+    max_bytes = size_limit_mb * 1024 * 1024
+
+    size = 0
+    try:
+        with destination.open("wb") as fh:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError(f"Image exceeds size limit ({size_limit_mb} MB).")
+                fh.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+
+    return destination.resolve()
 
 
 @router.post("/auth/token", response_model=AuthTokenResponse)
@@ -59,6 +125,7 @@ async def get_current_auth_context(request: Request):
         roles=list(ctx.get("roles") or []),
     )
 
+
 @router.post("/scan", response_model=ScanResponse)
 async def create_scan(request: ScanRequest):
     """Initiate a new OSINT scan."""
@@ -81,12 +148,50 @@ async def create_scan(request: ScanRequest):
         )
     except HTTPException:
         raise
-    except ValueError as e:
-        if "Case" in str(e) and "not found" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as exc:
+        if "Case" in str(exc) and "not found" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/scan/image", response_model=ScanResponse)
+async def create_image_scan(
+    file: UploadFile = File(...),
+    case_id: Optional[int] = Form(default=None),
+):
+    """Initiate image-based OSINT scan from multipart file upload."""
+    if not settings.integrations.vision.enabled:
+        raise HTTPException(status_code=400, detail="Vision integration is disabled")
+
+    try:
+        if case_id is not None and int(case_id) <= 0:
+            raise HTTPException(status_code=422, detail="case_id must be >= 1")
+
+        image_path = await _persist_uploaded_image(file)
+        logger.info("Stored image upload for scan: %s", image_path)
+
+        if not engine.registry.get_modules_for("image"):
+            raise HTTPException(
+                status_code=400,
+                detail="No modules registered for target_type 'image'",
+            )
+
+        job_id = await engine.queue_scan(str(image_path), "image", case_id=case_id)
+        job = await engine.queue.get_job(job_id)
+        return ScanResponse(
+            job_id=job_id,
+            status=(job or {}).get("status", "queued"),
+            case_id=(job or {}).get("case_id"),
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
 
 @router.get("/scan/{job_id}", response_model=StatusResponse)
 async def get_scan_status(job_id: str):
@@ -94,7 +199,7 @@ async def get_scan_status(job_id: str):
     job = await engine.queue.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-        
+
     return StatusResponse(
         job_id=job["id"],
         case_id=job.get("case_id"),
@@ -106,13 +211,14 @@ async def get_scan_status(job_id: str):
         error_message=job.get("error_message"),
     )
 
+
 @router.get("/result/{job_id}", response_model=ResultResponse)
 async def get_scan_results(job_id: str):
     """Retrieve the results of a scan."""
     job = await engine.get_merged_results(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-        
+
     return ResultResponse(
         job_id=job["id"],
         case_id=job.get("case_id"),
@@ -126,10 +232,12 @@ async def get_scan_results(job_id: str):
         error_message=job.get("error_message"),
     )
 
+
 @router.get("/modules", response_model=List[ModuleInfo])
 async def list_modules():
     """List all registered and active modules."""
     return engine.registry.list_all()
+
 
 @router.get("/status", response_model=SystemStatusResponse)
 async def get_system_status():

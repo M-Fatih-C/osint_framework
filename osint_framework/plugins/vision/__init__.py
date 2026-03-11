@@ -1,0 +1,1 @@
+"""Vision OSINT plugin package."""
