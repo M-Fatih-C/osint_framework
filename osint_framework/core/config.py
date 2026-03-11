@@ -83,6 +83,10 @@ class SecurityConfig(BaseModel):
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     file: Optional[str] = None
+    console: bool = True
+    rotate: bool = True
+    max_bytes: int = 10 * 1024 * 1024
+    backup_count: int = 5
 
 
 class MaigretIntegrationConfig(BaseModel):
@@ -164,6 +168,36 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         queue_data["stale_job_recovery_action"] = os.getenv(
             "OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION"
         )
+
+    logging_data = data.setdefault("logging", {})
+    if os.getenv("OSINT_LOG_LEVEL"):
+        logging_data["level"] = os.getenv("OSINT_LOG_LEVEL")
+    if os.getenv("OSINT_LOG_FILE"):
+        logging_data["file"] = os.getenv("OSINT_LOG_FILE")
+    if os.getenv("OSINT_LOG_CONSOLE") is not None:
+        logging_data["console"] = os.getenv("OSINT_LOG_CONSOLE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if os.getenv("OSINT_LOG_ROTATE") is not None:
+        logging_data["rotate"] = os.getenv("OSINT_LOG_ROTATE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    if os.getenv("OSINT_LOG_MAX_BYTES"):
+        try:
+            logging_data["max_bytes"] = int(os.getenv("OSINT_LOG_MAX_BYTES", "10485760"))
+        except ValueError:
+            pass
+    if os.getenv("OSINT_LOG_BACKUP_COUNT"):
+        try:
+            logging_data["backup_count"] = int(os.getenv("OSINT_LOG_BACKUP_COUNT", "5"))
+        except ValueError:
+            pass
         
     return AppConfig(**data)
 

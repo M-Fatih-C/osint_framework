@@ -64,6 +64,10 @@ security:
 
 logging:
   level: INFO
+  console: true
+  rotate: true
+  max_bytes: 10485760
+  backup_count: 5
   file: osint_framework.log
 
 integrations:

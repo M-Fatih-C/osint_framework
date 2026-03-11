@@ -30,6 +30,7 @@ Not: UI yalnızca backend’de yüklü modüllerin desteklediği target tiplerin
 
 ```text
 .
+├── Makefile                       # setup/smoke/cleanup kısa komutları
 ├── run.py                         # Repo kökünden API başlatma
 ├── run_worker.py                  # Redis queue worker process başlatma
 ├── alembic.ini                    # Alembic config
@@ -45,6 +46,7 @@ Not: UI yalnızca backend’de yüklü modüllerin desteklediği target tiplerin
 │   ├── cli/                       # Typer tabanlı CLI
 │   ├── config.yaml                # Uygulama ayarları
 │   └── osint.py                   # CLI entrypoint
+├── scripts/                       # setup/smoke/runtime cleanup otomasyonları
 └── tests/                         # Regression testleri
 ```
 
@@ -54,6 +56,34 @@ Not: UI yalnızca backend’de yüklü modüllerin desteklediği target tiplerin
 python3 -m venv osint_framework/venv
 source osint_framework/venv/bin/activate
 pip install -r requirements.txt
+```
+
+Alternatif (otomasyon):
+
+```bash
+make setup
+```
+
+Bu komut:
+
+- `.venv` oluşturur (yoksa)
+- bağımlılıkları kurar
+- test komutunu yazdırır
+
+## Hızlı Operasyon Komutları
+
+```bash
+# bağımlılık kurulumu
+make setup
+
+# API smoke test (status/modules/case/scan)
+make smoke
+
+# runtime temizlik (log truncate + AppleDouble temizliği)
+make clean-runtime
+
+# runtime temizlik + __pycache__
+make clean-runtime-all
 ```
 
 ## Çalıştırma
@@ -172,6 +202,7 @@ curl http://127.0.0.1:8000/api/v1/result/<job_id>
 - `security.jwt.*`: JWT auth / token / RBAC ayarları
 - `cache.type=redis` + `cache.url`: rate limit backend’i Redis’e taşır (fallback in-memory)
 - `queue.*`: scan execution queue backend (`in_process` / `redis`)
+- `logging.*`: dosya/console log davranışı + rotation parametreleri
 
 ## Username / Maigret Entegrasyonu
 
@@ -243,6 +274,14 @@ queue:
   requeue_inflight_on_worker_start: true
   stale_job_recovery_on_worker_start: true
   stale_job_recovery_action: requeue
+
+logging:
+  level: INFO
+  console: true
+  rotate: true
+  max_bytes: 10485760
+  backup_count: 5
+  file: osint_framework.log
 ```
 
 API key header varsayılanı: `X-API-Key`
@@ -280,10 +319,17 @@ Ana ayar dosyası: `osint_framework/config.yaml`
 - SQLite schema, eksik bazı kolonlar için otomatik uyumluluk migrasyonu uygular.
 - `OSINT_QUEUE_MODE` ve `OSINT_REDIS_URL` ile Redis queue ayarları ortamdan override edilebilir.
 - Ek queue override'ları:
-  - `OSINT_QUEUE_WORKER_LEASE_SECONDS`
-  - `OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS`
-  - `OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION` (`requeue` / `error`)
-  - `OSINT_REDIS_EVENTS_CHANNEL`
+- `OSINT_QUEUE_WORKER_LEASE_SECONDS`
+- `OSINT_QUEUE_WORKER_HEARTBEAT_INTERVAL_SECONDS`
+- `OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION` (`requeue` / `error`)
+- `OSINT_REDIS_EVENTS_CHANNEL`
+- logging override'ları:
+  - `OSINT_LOG_LEVEL`
+  - `OSINT_LOG_FILE`
+  - `OSINT_LOG_CONSOLE`
+  - `OSINT_LOG_ROTATE`
+  - `OSINT_LOG_MAX_BYTES`
+  - `OSINT_LOG_BACKUP_COUNT`
 
 ## Alembic Migration
 
