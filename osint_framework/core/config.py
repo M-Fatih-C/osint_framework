@@ -34,6 +34,10 @@ class ApiConfig(BaseModel):
     rate_limit: str = "100/minute"
     port: int = 8000
     host: str = "0.0.0.0"
+    cors_allowed_origins: List[str] = Field(default_factory=lambda: ["*"])
+    cors_allow_credentials: bool = False
+    cors_allowed_methods: List[str] = Field(default_factory=lambda: ["*"])
+    cors_allowed_headers: List[str] = Field(default_factory=lambda: ["*"])
 
 
 class QueueConfig(BaseModel):
@@ -117,7 +121,16 @@ class VisionIntegrationConfig(BaseModel):
     max_upload_mb: int = 15
     reverse_max_results: int = 30
     scraper_max_pages: int = 8
+    face_detection_min_confidence: float = 0.35
+    face_detection_min_size_px: int = 40
+    face_detection_iou_threshold: float = 0.45
+    face_detection_max_faces: int = 10
+    face_detection_allow_full_image_fallback: bool = True
+    face_crop_padding_ratio: float = 0.18
+    face_crop_square: bool = True
     enable_embedding: bool = True
+    embedding_max_faces: int = 5
+    embedding_force_top_face: bool = True
     enable_similarity_search: bool = True
     similarity_min_score: float = 0.82
     similarity_top_k: int = 5
@@ -156,6 +169,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
+    def _parse_csv_env(value: str) -> List[str]:
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
     # Targeted env overrides for distributed queue/worker deployment.
     queue_data = data.setdefault("queue", {})
     if os.getenv("OSINT_QUEUE_MODE"):
@@ -192,6 +208,26 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if os.getenv("OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION"):
         queue_data["stale_job_recovery_action"] = os.getenv(
             "OSINT_QUEUE_STALE_JOB_RECOVERY_ACTION"
+        )
+
+    api_data = data.setdefault("api", {})
+    if os.getenv("OSINT_API_RATE_LIMIT"):
+        api_data["rate_limit"] = os.getenv("OSINT_API_RATE_LIMIT")
+    if os.getenv("OSINT_CORS_ALLOWED_ORIGINS"):
+        api_data["cors_allowed_origins"] = _parse_csv_env(
+            os.getenv("OSINT_CORS_ALLOWED_ORIGINS", "")
+        )
+    if os.getenv("OSINT_CORS_ALLOW_CREDENTIALS") is not None:
+        api_data["cors_allow_credentials"] = os.getenv(
+            "OSINT_CORS_ALLOW_CREDENTIALS", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("OSINT_CORS_ALLOWED_METHODS"):
+        api_data["cors_allowed_methods"] = _parse_csv_env(
+            os.getenv("OSINT_CORS_ALLOWED_METHODS", "")
+        )
+    if os.getenv("OSINT_CORS_ALLOWED_HEADERS"):
+        api_data["cors_allowed_headers"] = _parse_csv_env(
+            os.getenv("OSINT_CORS_ALLOWED_HEADERS", "")
         )
 
     logging_data = data.setdefault("logging", {})
@@ -254,9 +290,63 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             )
         except ValueError:
             pass
+    if os.getenv("OSINT_VISION_FACE_MIN_CONFIDENCE"):
+        try:
+            vision_data["face_detection_min_confidence"] = float(
+                os.getenv("OSINT_VISION_FACE_MIN_CONFIDENCE", "0.35")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_FACE_MIN_SIZE_PX"):
+        try:
+            vision_data["face_detection_min_size_px"] = int(
+                os.getenv("OSINT_VISION_FACE_MIN_SIZE_PX", "40")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_FACE_IOU_THRESHOLD"):
+        try:
+            vision_data["face_detection_iou_threshold"] = float(
+                os.getenv("OSINT_VISION_FACE_IOU_THRESHOLD", "0.45")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_FACE_MAX_FACES"):
+        try:
+            vision_data["face_detection_max_faces"] = int(
+                os.getenv("OSINT_VISION_FACE_MAX_FACES", "10")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_FACE_ALLOW_FULL_IMAGE_FALLBACK") is not None:
+        vision_data["face_detection_allow_full_image_fallback"] = os.getenv(
+            "OSINT_VISION_FACE_ALLOW_FULL_IMAGE_FALLBACK", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("OSINT_VISION_FACE_CROP_PADDING_RATIO"):
+        try:
+            vision_data["face_crop_padding_ratio"] = float(
+                os.getenv("OSINT_VISION_FACE_CROP_PADDING_RATIO", "0.18")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_FACE_CROP_SQUARE") is not None:
+        vision_data["face_crop_square"] = os.getenv(
+            "OSINT_VISION_FACE_CROP_SQUARE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
     if os.getenv("OSINT_VISION_ENABLE_EMBEDDING") is not None:
         vision_data["enable_embedding"] = os.getenv(
             "OSINT_VISION_ENABLE_EMBEDDING", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("OSINT_VISION_EMBEDDING_MAX_FACES"):
+        try:
+            vision_data["embedding_max_faces"] = int(
+                os.getenv("OSINT_VISION_EMBEDDING_MAX_FACES", "5")
+            )
+        except ValueError:
+            pass
+    if os.getenv("OSINT_VISION_EMBEDDING_FORCE_TOP_FACE") is not None:
+        vision_data["embedding_force_top_face"] = os.getenv(
+            "OSINT_VISION_EMBEDDING_FORCE_TOP_FACE", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
     if os.getenv("OSINT_VISION_ENABLE_SIMILARITY") is not None:
         vision_data["enable_similarity_search"] = os.getenv(

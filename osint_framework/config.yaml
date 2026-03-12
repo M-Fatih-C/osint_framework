@@ -24,6 +24,13 @@ api:
   rate_limit: "100/minute"
   port: 8000
   host: 0.0.0.0
+  cors_allowed_origins:
+    - "*"
+  cors_allow_credentials: false
+  cors_allowed_methods:
+    - "*"
+  cors_allowed_headers:
+    - "*"
 
 queue:
   mode: in_process
@@ -89,7 +96,16 @@ integrations:
     max_upload_mb: 15
     reverse_max_results: 30
     scraper_max_pages: 8
+    face_detection_min_confidence: 0.35
+    face_detection_min_size_px: 40
+    face_detection_iou_threshold: 0.45
+    face_detection_max_faces: 10
+    face_detection_allow_full_image_fallback: true
+    face_crop_padding_ratio: 0.18
+    face_crop_square: true
     enable_embedding: true
+    embedding_max_faces: 5
+    embedding_force_top_face: true
     enable_similarity_search: true
     similarity_min_score: 0.82
     similarity_top_k: 5

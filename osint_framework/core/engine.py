@@ -201,6 +201,22 @@ class CoreEngine:
             logger.info(f"Job {job_id} finished execution.")
         except asyncio.CancelledError:
             logger.warning("Scan job %s was cancelled.", job_id)
+            try:
+                await self.queue.update_job_status(
+                    job_id,
+                    "error",
+                    error_message="Scan cancelled before completion",
+                )
+                await self._emit_event(
+                    {
+                        "type": "job_update",
+                        "job_id": job_id,
+                        "status": "error",
+                        "error": "Scan cancelled before completion",
+                    }
+                )
+            except Exception:
+                logger.exception("Failed to persist cancelled state for job %s", job_id)
             raise
         except Exception as exc:
             logger.exception("Job %s failed during execution", job_id)

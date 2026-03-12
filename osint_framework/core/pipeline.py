@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 
 @dataclass
@@ -14,8 +15,17 @@ class PipelineContext:
     artifacts: Dict[str, Any] = field(default_factory=dict)
     events: List[Dict[str, Any]] = field(default_factory=list)
 
-    def add_event(self, stage: str, status: str, detail: str = "") -> None:
-        self.events.append({"stage": stage, "status": status, "detail": detail})
+    def add_event(
+        self,
+        stage: str,
+        status: str,
+        detail: str = "",
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        event = {"stage": stage, "status": status, "detail": detail}
+        if meta:
+            event.update(meta)
+        self.events.append(event)
 
 
 class PipelineStage(Protocol):
@@ -33,11 +43,29 @@ class PipelineRunner:
 
     async def execute(self, context: PipelineContext) -> PipelineContext:
         for stage in self.stages:
-            context.add_event(stage.name, "started")
+            started_at_ms = int(time.time() * 1000)
+            context.add_event(stage.name, "started", meta={"at_ms": started_at_ms})
             try:
                 await stage.run(context)
-                context.add_event(stage.name, "completed")
+                completed_at_ms = int(time.time() * 1000)
+                context.add_event(
+                    stage.name,
+                    "completed",
+                    meta={
+                        "at_ms": completed_at_ms,
+                        "duration_ms": max(0, completed_at_ms - started_at_ms),
+                    },
+                )
             except Exception as exc:
-                context.add_event(stage.name, "error", str(exc))
+                errored_at_ms = int(time.time() * 1000)
+                context.add_event(
+                    stage.name,
+                    "error",
+                    str(exc),
+                    meta={
+                        "at_ms": errored_at_ms,
+                        "duration_ms": max(0, errored_at_ms - started_at_ms),
+                    },
+                )
                 raise
         return context

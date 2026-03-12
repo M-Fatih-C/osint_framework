@@ -16,6 +16,7 @@ from osint_framework.api.main import app
 from osint_framework.api.schemas import ScanRequest
 from osint_framework.core.config import settings
 from osint_framework.core.correlation import Correlator
+from osint_framework.core.pipeline import PipelineContext, PipelineRunner
 from osint_framework.core.case_manager import case_manager
 from osint_framework.core.database import db_manager
 from osint_framework.core.engine import engine
@@ -28,7 +29,10 @@ from osint_framework.core.config import JWTUserConfig
 from osint_framework.plugins.base import BaseModule
 from osint_framework.plugins.person.username import UsernameModule
 from osint_framework.plugins.registry import registry
+from osint_framework.plugins.vision.face_detector import VisionFaceDetector
+from osint_framework.plugins.vision.identity_matcher import VisionIdentityMatcher
 from osint_framework.plugins.vision.similarity_search import FaceSimilaritySearcher
+from osint_framework.plugins.vision.vision_pipeline import DetectAndCropStage, FaceEmbeddingStage
 from osint_framework.reports.ai_summary import ai_reporter
 
 
@@ -177,6 +181,168 @@ class CorrelationNormalizationTests(unittest.TestCase):
         self.assertIn("similar_to_face_reference", relation_types)
 
 
+class PipelineRunnerMetricsTests(unittest.TestCase):
+    def test_pipeline_events_include_duration(self):
+        class Stage:
+            def __init__(self, name: str):
+                self.name = name
+
+            async def run(self, context):
+                await asyncio.sleep(0)
+
+        context = PipelineContext(target="example.com", target_type="domain")
+        runner = PipelineRunner([Stage("collect"), Stage("normalize")])
+        asyncio.run(runner.execute(context))
+
+        completed = [e for e in context.events if e.get("status") == "completed"]
+        self.assertEqual(len(completed), 2)
+        self.assertTrue(all(isinstance(e.get("duration_ms"), int) for e in completed))
+        self.assertTrue(all("at_ms" in e for e in completed))
+
+
+class VisionFaceDetectorQualityTests(unittest.TestCase):
+    def test_detector_filters_low_quality_faces(self):
+        detector = VisionFaceDetector()
+        detector.min_confidence = 0.5
+        detector.min_size_px = 30
+        detector.iou_threshold = 0.45
+        detector.max_faces = 5
+        detector.allow_full_image_fallback = False
+
+        detector._probe_dimensions = lambda _: (200, 200)
+
+        def retina_provider(_):
+            return {
+                "status": "ok",
+                "provider": "retinaface",
+                "faces": [
+                    {"face_id": "face_a", "bbox": [10, 10, 80, 80], "confidence": 0.95},
+                    {"face_id": "face_b", "bbox": [12, 12, 78, 78], "confidence": 0.88},
+                    {"face_id": "face_c", "bbox": [100, 100, 120, 120], "confidence": 0.99},
+                    {"face_id": "face_d", "bbox": [30, 30, 90, 90], "confidence": 0.2},
+                ],
+            }
+
+        def opencv_provider(_):
+            return {"status": "ok", "provider": "opencv_haar", "faces": []}
+
+        detector._detect_with_retinaface = retina_provider
+        detector._detect_with_opencv = opencv_provider
+
+        result = detector.detect_faces("dummy.jpg")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["provider"], "retinaface")
+        self.assertEqual(len(result["faces"]), 1)
+        self.assertEqual(result["faces"][0]["face_id"], "face_a")
+        self.assertEqual(result["quality"]["rejected"]["below_confidence"], 1)
+        self.assertEqual(result["quality"]["rejected"]["too_small"], 1)
+        self.assertGreaterEqual(result["quality"]["nms_suppressed"], 1)
+
+    def test_detector_returns_error_if_no_face_and_fallback_disabled(self):
+        detector = VisionFaceDetector()
+        detector.allow_full_image_fallback = False
+        detector._probe_dimensions = lambda _: (160, 160)
+        detector._detect_with_retinaface = lambda _: {"status": "ok", "provider": "retinaface", "faces": []}
+        detector._detect_with_opencv = lambda _: {"status": "ok", "provider": "opencv_haar", "faces": []}
+
+        result = detector.detect_faces("dummy.jpg")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["provider"], "none")
+        self.assertEqual(result["faces"], [])
+        self.assertIn("fallback disabled", result["reason"])
+
+
+class VisionCropBoxTests(unittest.TestCase):
+    def test_crop_box_applies_padding_and_square(self):
+        stage = DetectAndCropStage()
+        stage.crop_padding_ratio = 0.2
+        stage.crop_square = True
+
+        crop_bbox = stage._build_crop_bbox([40, 30, 70, 80], width=140, height=120)
+        self.assertIsNotNone(crop_bbox)
+        x1, y1, x2, y2 = crop_bbox
+        self.assertGreaterEqual(x1, 0)
+        self.assertGreaterEqual(y1, 0)
+        self.assertLessEqual(x2, 140)
+        self.assertLessEqual(y2, 120)
+        self.assertEqual(x2 - x1, y2 - y1)
+        self.assertLessEqual(x1, 40)
+        self.assertLessEqual(y1, 30)
+        self.assertGreaterEqual(x2, 70)
+        self.assertGreaterEqual(y2, 80)
+
+
+class VisionEmbeddingStageSelectionTests(unittest.TestCase):
+    def test_stage_forces_top_face_when_all_are_below_threshold(self):
+        stage = FaceEmbeddingStage()
+        stage.min_face_confidence = 0.95
+        stage.max_faces = 3
+        stage.force_top_face = True
+        captured = {}
+
+        def fake_extract(face_inputs, include_vectors=False):
+            captured["face_inputs"] = list(face_inputs)
+            return {
+                "status": "ok",
+                "embeddings": [
+                    {"face_ref": item["face_ref"], "vector": [0.1, 0.2], "provider": "unit"}
+                    for item in face_inputs
+                ],
+            }
+
+        stage.embedder.extract = fake_extract
+
+        context = PipelineContext(target="dummy.jpg", target_type="image")
+        context.data["faces"] = [
+            {"face_id": "face_a", "bbox": [10, 10, 50, 50], "crop_path": "/tmp/a.jpg", "confidence": 0.30},
+            {"face_id": "face_b", "bbox": [60, 20, 100, 80], "crop_path": "/tmp/b.jpg", "confidence": 0.15},
+        ]
+
+        asyncio.run(stage.run(context))
+
+        selected = captured.get("face_inputs") or []
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["face_ref"], "face_a")
+        self.assertEqual(context.data["embedding_inputs"]["used_total"], 1)
+        self.assertEqual(context.data["embedding_inputs"]["forced_low_confidence"], 1)
+        self.assertEqual(context.data["embedding_inputs"]["skipped_low_confidence"], 1)
+
+    def test_stage_respects_max_faces_limit(self):
+        stage = FaceEmbeddingStage()
+        stage.min_face_confidence = 0.4
+        stage.max_faces = 2
+        stage.force_top_face = False
+        captured = {}
+
+        def fake_extract(face_inputs, include_vectors=False):
+            captured["face_inputs"] = list(face_inputs)
+            return {
+                "status": "ok",
+                "embeddings": [
+                    {"face_ref": item["face_ref"], "vector": [0.1, 0.2], "provider": "unit"}
+                    for item in face_inputs
+                ],
+            }
+
+        stage.embedder.extract = fake_extract
+
+        context = PipelineContext(target="dummy.jpg", target_type="image")
+        context.data["faces"] = [
+            {"face_id": "face_1", "bbox": [5, 5, 45, 45], "crop_path": "/tmp/1.jpg", "confidence": 0.91},
+            {"face_id": "face_2", "bbox": [50, 10, 90, 50], "crop_path": "/tmp/2.jpg", "confidence": 0.83},
+            {"face_id": "face_3", "bbox": [95, 15, 130, 55], "crop_path": "/tmp/3.jpg", "confidence": 0.77},
+            {"face_id": "face_4", "bbox": [20, 60, 45, 85], "crop_path": "/tmp/4.jpg", "confidence": 0.10},
+        ]
+
+        asyncio.run(stage.run(context))
+
+        selected = captured.get("face_inputs") or []
+        self.assertEqual([item["face_ref"] for item in selected], ["face_1", "face_2"])
+        self.assertEqual(context.data["embedding_inputs"]["used_total"], 2)
+        self.assertEqual(context.data["embedding_inputs"]["trimmed_by_max_faces"], 1)
+        self.assertEqual(context.data["embedding_inputs"]["skipped_low_confidence"], 1)
+
+
 class VisionSimilarityTests(unittest.TestCase):
     def test_similarity_index_matches_second_similar_face(self):
         with tempfile.TemporaryDirectory(prefix="vision_sim_") as tmpdir:
@@ -223,6 +389,58 @@ class VisionSimilarityTests(unittest.TestCase):
             top = second["matches"][0]
             self.assertEqual(top["matched_image_path"], "/tmp/a.jpg")
             self.assertGreater(top["score"], 0.9)
+
+
+class VisionIdentityMatcherTests(unittest.TestCase):
+    def test_matcher_fuses_reverse_hits_and_entities(self):
+        matcher = VisionIdentityMatcher(max_candidates=3, min_confidence=0.2)
+        payload = matcher.match(
+            image_target="/tmp/unit.jpg",
+            reverse_search={
+                "results": [
+                    {
+                        "url": "https://github.com/alice",
+                        "title": "alice (GitHub)",
+                        "match_type": "page_match",
+                    }
+                ]
+            },
+            scraped={
+                "pages": [
+                    {
+                        "url": "https://github.com/alice",
+                        "final_url": "https://github.com/alice",
+                        "title": "alice (GitHub)",
+                    }
+                ],
+                "entities": [
+                    {
+                        "type": "username",
+                        "value": "alice",
+                        "platform": "github",
+                        "source_url": "https://github.com/alice",
+                    },
+                    {
+                        "type": "person_name",
+                        "value": "Alice Doe",
+                        "source_url": "https://github.com/alice",
+                    },
+                    {
+                        "type": "email",
+                        "value": "alice@example.com",
+                        "source_url": "https://github.com/alice",
+                    },
+                ],
+            },
+            similarity={"matches_total": 1},
+        )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertGreaterEqual(payload["candidates_total"], 1)
+        best = payload["best_candidate"]
+        self.assertIsNotNone(best)
+        self.assertTrue(any(u["platform"] == "github" for u in best.get("usernames", [])))
+        self.assertIn("alice@example.com", best.get("emails", []))
 
 
 class ApiBehaviorTests(unittest.TestCase):

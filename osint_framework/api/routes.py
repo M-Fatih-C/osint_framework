@@ -50,6 +50,15 @@ def _sanitize_filename(name: str) -> str:
     return safe or "image"
 
 
+def _cleanup_uploaded_image(path: Optional[Path]) -> None:
+    if not path:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning("Failed to cleanup uploaded image %s: %s", path, exc)
+
+
 async def _persist_uploaded_image(upload: UploadFile) -> Path:
     original_name = (upload.filename or "upload.bin").strip()
     ext = Path(original_name).suffix.lower()
@@ -165,6 +174,7 @@ async def create_image_scan(
     if not settings.integrations.vision.enabled:
         raise HTTPException(status_code=400, detail="Vision integration is disabled")
 
+    image_path: Optional[Path] = None
     try:
         if case_id is not None and int(case_id) <= 0:
             raise HTTPException(status_code=422, detail="case_id must be >= 1")
@@ -186,10 +196,13 @@ async def create_image_scan(
             case_id=(job or {}).get("case_id"),
         )
     except HTTPException:
+        _cleanup_uploaded_image(image_path)
         raise
     except ValueError as exc:
+        _cleanup_uploaded_image(image_path)
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
+        _cleanup_uploaded_image(image_path)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
