@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from typing import Any, Dict
 from types import SimpleNamespace
 
@@ -29,6 +30,9 @@ from osint_framework.core.config import JWTUserConfig
 from osint_framework.plugins.base import BaseModule
 from osint_framework.plugins.person.username import UsernameModule
 from osint_framework.plugins.registry import registry
+from osint_framework.plugins.vision.calibration_apply import apply_calibration_report
+from osint_framework.plugins.vision.calibration import VisionThresholdCalibrator
+from osint_framework.plugins.vision.dataset_manifest import VisionCalibrationManifestBuilder
 from osint_framework.plugins.vision.face_detector import VisionFaceDetector
 from osint_framework.plugins.vision.identity_matcher import VisionIdentityMatcher
 from osint_framework.plugins.vision.similarity_search import FaceSimilaritySearcher
@@ -341,6 +345,203 @@ class VisionEmbeddingStageSelectionTests(unittest.TestCase):
         self.assertEqual(context.data["embedding_inputs"]["used_total"], 2)
         self.assertEqual(context.data["embedding_inputs"]["trimmed_by_max_faces"], 1)
         self.assertEqual(context.data["embedding_inputs"]["skipped_low_confidence"], 1)
+
+
+class VisionCalibrationTests(unittest.TestCase):
+    def test_calibrator_recommends_reasonable_threshold(self):
+        calibrator = VisionThresholdCalibrator(
+            min_threshold=0.5,
+            max_threshold=0.95,
+            step=0.05,
+            default_threshold=0.82,
+        )
+        report = calibrator.calibrate_from_scores(
+            positive_scores=[0.93, 0.91, 0.88, 0.84],
+            negative_scores=[0.15, 0.22, 0.33, 0.41, 0.55, 0.58],
+        )
+
+        self.assertEqual(report["status"], "ok")
+        recommended = float(report["recommended_similarity_min_score"])
+        self.assertGreaterEqual(recommended, 0.75)
+        self.assertLessEqual(recommended, 0.85)
+        best = report["best_threshold_metrics"]
+        self.assertGreaterEqual(float(best["precision"]), 0.99)
+        self.assertGreaterEqual(float(best["recall"]), 0.99)
+        self.assertGreaterEqual(float(best["f1"]), 0.99)
+
+    def test_calibrator_returns_error_with_insufficient_pairs(self):
+        calibrator = VisionThresholdCalibrator()
+        report = calibrator.calibrate_from_scores(
+            positive_scores=[0.91, 0.89],
+            negative_scores=[],
+        )
+        self.assertEqual(report["status"], "error")
+        self.assertIn("insufficient_pairs", report["reason"])
+
+    def test_calibrator_marks_warning_for_degenerate_distribution(self):
+        calibrator = VisionThresholdCalibrator()
+        report = calibrator.calibrate_from_scores(
+            positive_scores=[1.0, 1.0, 1.0, 1.0],
+            negative_scores=[1.0, 1.0, 1.0],
+        )
+        self.assertEqual(report["status"], "warning")
+        self.assertIsNone(report["recommended_similarity_min_score"])
+        quality = report.get("quality_assessment") or {}
+        self.assertFalse(bool(quality.get("reliable")))
+        self.assertIn("degenerate_similarity_distribution", quality.get("reasons", []))
+
+
+class VisionCalibrationManifestBuilderTests(unittest.TestCase):
+    def test_builder_subdirs_mode(self):
+        with tempfile.TemporaryDirectory(prefix="vision_manifest_subdirs_") as tmpdir:
+            base = Path(tmpdir)
+            (base / "alice").mkdir(parents=True, exist_ok=True)
+            (base / "bob").mkdir(parents=True, exist_ok=True)
+            (base / "alice" / "a1.jpg").write_bytes(b"a1")
+            (base / "alice" / "a2.jpg").write_bytes(b"a2")
+            (base / "bob" / "b1.jpg").write_bytes(b"b1")
+            (base / "bob" / "b2.jpg").write_bytes(b"b2")
+
+            output = base / "manifest.json"
+            builder = VisionCalibrationManifestBuilder()
+            report = builder.build(
+                dataset_dir=str(base),
+                output_path=str(output),
+                mode="subdirs",
+                min_samples_per_identity=2,
+            )
+
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["identities_total"], 2)
+            self.assertEqual(report["samples_total"], 4)
+            self.assertTrue(output.exists())
+            data = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(len(data), 4)
+            self.assertEqual({item["identity"] for item in data}, {"alice", "bob"})
+
+    def test_builder_prefix_mode(self):
+        with tempfile.TemporaryDirectory(prefix="vision_manifest_prefix_") as tmpdir:
+            base = Path(tmpdir)
+            (base / "alice_01.jpg").write_bytes(b"a1")
+            (base / "alice_02.jpg").write_bytes(b"a2")
+            (base / "bob_01.jpg").write_bytes(b"b1")
+            (base / "bob_02.jpg").write_bytes(b"b2")
+            (base / "charlie_01.jpg").write_bytes(b"c1")
+
+            output = base / "manifest_prefix.json"
+            builder = VisionCalibrationManifestBuilder()
+            report = builder.build(
+                dataset_dir=str(base),
+                output_path=str(output),
+                mode="prefix",
+                min_samples_per_identity=2,
+            )
+
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["mode"], "prefix")
+            self.assertEqual(report["identities_total"], 2)
+            self.assertEqual(report["samples_total"], 4)
+            dropped = report["dropped_identities"]
+            self.assertIn("charlie", dropped)
+            self.assertEqual(int(dropped["charlie"]), 1)
+
+    def test_builder_prefix_mode_skips_test_like_files(self):
+        with tempfile.TemporaryDirectory(prefix="vision_manifest_filter_") as tmpdir:
+            base = Path(tmpdir)
+            (base / "20260101_010101_unit_test_a.jpg").write_bytes(b"t1")
+            (base / "20260101_010101_unit_test_b.jpg").write_bytes(b"t2")
+            (base / "20260101_john_01.jpg").write_bytes(b"j1")
+            (base / "20260102_john_02.jpg").write_bytes(b"j2")
+            (base / "20260103_jane_01.jpg").write_bytes(b"k1")
+            (base / "20260104_jane_02.jpg").write_bytes(b"k2")
+
+            output = base / "manifest_filtered.json"
+            builder = VisionCalibrationManifestBuilder()
+            report = builder.build(
+                dataset_dir=str(base),
+                output_path=str(output),
+                mode="prefix",
+                min_samples_per_identity=2,
+            )
+
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["identities_total"], 2)
+            self.assertEqual(set(report["identities"]), {"jane", "john"})
+            data = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual({item["identity"] for item in data}, {"jane", "john"})
+
+
+class VisionCalibrationApplyTests(unittest.TestCase):
+    def test_apply_calibration_updates_config_and_env(self):
+        with tempfile.TemporaryDirectory(prefix="vision_apply_") as tmpdir:
+            base = Path(tmpdir)
+            config_path = base / "config.yaml"
+            env_path = base / ".env.example"
+            report_path = base / "report.json"
+
+            config_path.write_text(
+                "integrations:\n  vision:\n    similarity_min_score: 0.82\n",
+                encoding="utf-8",
+            )
+            env_path.write_text(
+                "OSINT_VISION_SIMILARITY_MIN_SCORE=0.82\n",
+                encoding="utf-8",
+            )
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "recommended_similarity_min_score": 0.91,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = apply_calibration_report(
+                report_path=str(report_path),
+                config_path=str(config_path),
+                env_example_path=str(env_path),
+            )
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["config"]["status"], "updated")
+            self.assertEqual(result["env_example"]["status"], "updated")
+            self.assertIn("similarity_min_score: 0.91", config_path.read_text(encoding="utf-8"))
+            self.assertIn("OSINT_VISION_SIMILARITY_MIN_SCORE=0.91", env_path.read_text(encoding="utf-8"))
+
+    def test_apply_calibration_rejects_unreliable_report(self):
+        with tempfile.TemporaryDirectory(prefix="vision_apply_warn_") as tmpdir:
+            base = Path(tmpdir)
+            config_path = base / "config.yaml"
+            env_path = base / ".env.example"
+            report_path = base / "report_warning.json"
+
+            config_path.write_text(
+                "integrations:\n  vision:\n    similarity_min_score: 0.82\n",
+                encoding="utf-8",
+            )
+            env_path.write_text(
+                "OSINT_VISION_SIMILARITY_MIN_SCORE=0.82\n",
+                encoding="utf-8",
+            )
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "warning",
+                        "recommended_similarity_min_score": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = apply_calibration_report(
+                report_path=str(report_path),
+                config_path=str(config_path),
+                env_example_path=str(env_path),
+            )
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["reason"], "report_not_reliable_for_apply")
+            self.assertIn("similarity_min_score: 0.82", config_path.read_text(encoding="utf-8"))
+            self.assertIn("OSINT_VISION_SIMILARITY_MIN_SCORE=0.82", env_path.read_text(encoding="utf-8"))
 
 
 class VisionSimilarityTests(unittest.TestCase):

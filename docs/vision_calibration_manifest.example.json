@@ -1,0 +1,22 @@
+[
+  {
+    "sample_id": "alice_01",
+    "identity": "alice",
+    "path": "/absolute/path/to/faces/alice_01.jpg"
+  },
+  {
+    "sample_id": "alice_02",
+    "identity": "alice",
+    "path": "/absolute/path/to/faces/alice_02.jpg"
+  },
+  {
+    "sample_id": "bob_01",
+    "identity": "bob",
+    "path": "/absolute/path/to/faces/bob_01.jpg"
+  },
+  {
+    "sample_id": "bob_02",
+    "identity": "bob",
+    "path": "/absolute/path/to/faces/bob_02.jpg"
+  }
+]

@@ -152,7 +152,19 @@ Notlar:
 ```bash
 python -m osint_framework.osint --help
 python -m osint_framework.osint scan domain example.com
+python -m osint_framework.osint vision-build-manifest /path/to/faces osint_framework/data/vision/calibration_manifest.json auto 2
+python -m osint_framework.osint vision-calibrate docs/vision_calibration_manifest.example.json osint_framework/data/vision/calibration_report.json
+python -m osint_framework.osint vision-apply-calibration osint_framework/data/vision/calibration_report.json osint_framework/config.yaml .env.example
 ```
+
+`vision-build-manifest` komutu dataset klasöründen (klasör bazlı veya dosya adı prefix bazlı)
+kalibrasyon manifest’i üretir.
+
+`vision-calibrate` komutu, etiketli yüz örneklerinden (`path`, `identity`) benzerlik eşiği
+önerir ve `OSINT_VISION_SIMILARITY_MIN_SCORE` için JSON rapor üretir.
+
+`vision-apply-calibration` komutu, kalibrasyon raporu güvenilir (`status=ok`) ise
+önerilen eşiği config dosyalarına uygular.
 
 ## API Endpoint’leri
 
