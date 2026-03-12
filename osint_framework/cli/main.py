@@ -168,6 +168,80 @@ def vision_build_manifest(
         typer.echo(f"  Dropped (min_samples<{min_samples_per_identity}): {len(dropped)} identities")
 
 
+@app.command("vision-create-review")
+def vision_create_review(
+    image_path: str,
+    review_dir: str = typer.Argument("osint_framework/data/vision/review"),
+    min_size_px: int = typer.Argument(120),
+    max_faces: int = typer.Argument(20),
+):
+    """
+    Detect faces and create a review package (crops + review.json).
+    """
+    try:
+        from osint_framework.plugins.vision.face_review import VisionFaceReviewSession
+    except Exception as exc:
+        typer.secho(f"[-] Could not load face review module: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    session = VisionFaceReviewSession(min_size_px=min_size_px, max_faces=max_faces)
+    try:
+        result = session.create_review(image_path=image_path, review_dir=review_dir)
+    except Exception as exc:
+        typer.secho(f"[-] Review creation failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if result.get("status") != "ok":
+        typer.secho(f"[-] Review creation failed: {result.get('reason')}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.secho("\n[+] Review package created", fg=typer.colors.GREEN)
+    typer.echo(f"  Provider: {result.get('provider')}")
+    typer.echo(f"  Faces: {result.get('faces_total')}")
+    typer.echo(f"  Review file: {result.get('review_path')}")
+    typer.echo("  Next: edit review.json and set approved=true + identity for valid faces.")
+
+
+@app.command("vision-export-approved")
+def vision_export_approved(
+    review_json_path: str,
+    dataset_dir: str = typer.Argument("osint_framework/data/vision/datasets/approved_faces"),
+    min_samples_per_identity: int = typer.Argument(2),
+):
+    """
+    Export approved faces from review.json into dataset folders by identity.
+    """
+    try:
+        from osint_framework.plugins.vision.face_review import VisionFaceReviewSession
+    except Exception as exc:
+        typer.secho(f"[-] Could not load face review module: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    session = VisionFaceReviewSession()
+    try:
+        result = session.export_approved_dataset(
+            review_json_path=review_json_path,
+            dataset_dir=dataset_dir,
+            min_samples_per_identity=min_samples_per_identity,
+        )
+    except Exception as exc:
+        typer.secho(f"[-] Export failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if result.get("status") != "ok":
+        typer.secho("[-] Export failed: no approved faces written", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.secho("\n[+] Approved faces exported", fg=typer.colors.GREEN)
+    typer.echo(f"  Dataset: {result.get('dataset_dir')}")
+    typer.echo(f"  Written: {result.get('written_total')}")
+    typer.echo(f"  Identities: {result.get('identities_total')}")
+    below_min = result.get("below_min_samples") or {}
+    if below_min:
+        typer.secho("  Warning: some identities are below recommended sample count.", fg=typer.colors.YELLOW)
+        typer.echo(f"  Below min: {below_min}")
+
+
 @app.command("vision-apply-calibration")
 def vision_apply_calibration(
     report_path: str,

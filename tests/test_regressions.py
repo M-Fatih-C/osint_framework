@@ -35,6 +35,7 @@ from osint_framework.plugins.vision.calibration import VisionThresholdCalibrator
 from osint_framework.plugins.vision.dataset_manifest import VisionCalibrationManifestBuilder
 from osint_framework.plugins.vision.face_detector import VisionFaceDetector
 from osint_framework.plugins.vision.identity_matcher import VisionIdentityMatcher
+from osint_framework.plugins.vision.face_review import VisionFaceReviewSession
 from osint_framework.plugins.vision.similarity_search import FaceSimilaritySearcher
 from osint_framework.plugins.vision.vision_pipeline import DetectAndCropStage, FaceEmbeddingStage
 from osint_framework.reports.ai_summary import ai_reporter
@@ -542,6 +543,56 @@ class VisionCalibrationApplyTests(unittest.TestCase):
             self.assertEqual(result["reason"], "report_not_reliable_for_apply")
             self.assertIn("similarity_min_score: 0.82", config_path.read_text(encoding="utf-8"))
             self.assertIn("OSINT_VISION_SIMILARITY_MIN_SCORE=0.82", env_path.read_text(encoding="utf-8"))
+
+
+class VisionFaceReviewTests(unittest.TestCase):
+    def test_create_review_and_export_approved_faces(self):
+        with tempfile.TemporaryDirectory(prefix="vision_review_") as tmpdir:
+            base = Path(tmpdir)
+            image_path = base / "group.jpg"
+            review_dir = base / "review_session"
+            dataset_dir = base / "dataset"
+
+            # Small synthetic image for deterministic crop writes.
+            from PIL import Image  # type: ignore
+
+            Image.new("RGB", (800, 600), color=(120, 120, 120)).save(image_path, format="JPEG")
+
+            session = VisionFaceReviewSession(min_size_px=40, max_faces=10)
+            session.detector.detect_faces = lambda _: {
+                "status": "ok",
+                "provider": "unit",
+                "faces": [
+                    {"face_id": "face_1", "bbox": [100, 100, 300, 320], "confidence": 0.9},
+                    {"face_id": "face_2", "bbox": [380, 120, 620, 360], "confidence": 0.88},
+                ],
+                "quality": {},
+            }
+
+            created = session.create_review(str(image_path), str(review_dir))
+            self.assertEqual(created["status"], "ok")
+            review_path = Path(created["review_path"])
+            self.assertTrue(review_path.exists())
+
+            doc = json.loads(review_path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["faces_total"], 2)
+            faces = doc["faces"]
+            faces[0]["approved"] = True
+            faces[0]["identity"] = "alice"
+            faces[1]["approved"] = True
+            faces[1]["identity"] = "bob"
+            review_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            exported = session.export_approved_dataset(
+                review_json_path=str(review_path),
+                dataset_dir=str(dataset_dir),
+                min_samples_per_identity=1,
+            )
+            self.assertEqual(exported["status"], "ok")
+            self.assertEqual(exported["written_total"], 2)
+            self.assertEqual(set(exported["identities"]), {"alice", "bob"})
+            self.assertTrue((dataset_dir / "alice" / "sample_001.jpg").exists())
+            self.assertTrue((dataset_dir / "bob" / "sample_001.jpg").exists())
 
 
 class VisionSimilarityTests(unittest.TestCase):

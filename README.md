@@ -152,10 +152,18 @@ Notlar:
 ```bash
 python -m osint_framework.osint --help
 python -m osint_framework.osint scan domain example.com
+python -m osint_framework.osint vision-create-review /path/to/group_photo.jpg osint_framework/data/vision/review/session_001 120 20
+# edit review.json: approved=true + identity=person_name
+python -m osint_framework.osint vision-export-approved osint_framework/data/vision/review/session_001/review.json osint_framework/data/vision/datasets/approved_faces 2
 python -m osint_framework.osint vision-build-manifest /path/to/faces osint_framework/data/vision/calibration_manifest.json auto 2
 python -m osint_framework.osint vision-calibrate docs/vision_calibration_manifest.example.json osint_framework/data/vision/calibration_report.json
 python -m osint_framework.osint vision-apply-calibration osint_framework/data/vision/calibration_report.json osint_framework/config.yaml .env.example
 ```
+
+`vision-create-review` komutu grup fotoğraflarından yüz crop’ları ve `review.json` üretir.
+
+`vision-export-approved` komutu `review.json` içinden manuel onaylanan yüzleri
+kimlik klasörlerine export eder.
 
 `vision-build-manifest` komutu dataset klasöründen (klasör bazlı veya dosya adı prefix bazlı)
 kalibrasyon manifest’i üretir.
@@ -165,6 +173,9 @@ kalibrasyon manifest’i üretir.
 
 `vision-apply-calibration` komutu, kalibrasyon raporu güvenilir (`status=ok`) ise
 önerilen eşiği config dosyalarına uygular.
+
+Not: Kalibrasyon için gerçek veri kalitesi kritiktir; her kimlik için farklı açılardan
+en az `3-5` fotoğraf önerilir.
 
 ## API Endpoint’leri
 
