@@ -652,8 +652,8 @@ body {
     display: grid;
     grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.45fr);
     /* First row (terminal + graph) must stay bounded; other rows can grow naturally. */
-    grid-template-rows: clamp(340px, 44vh, 520px);
-    grid-auto-rows: minmax(160px, auto);
+    grid-template-rows: clamp(320px, 40vh, 500px);
+    grid-auto-rows: auto;
     gap: 18px;
 }
 
@@ -668,6 +668,7 @@ body {
     justify-content: space-between;
     gap: 12px;
     border-color: rgba(89, 212, 255, 0.16);
+    min-height: 0;
 }
 
 .workspace-tabs {
@@ -705,6 +706,7 @@ body {
 .workspace-helper {
     font-size: 12px;
     color: var(--text-muted);
+    line-height: 1.4;
 }
 
 .workspace-pane {
