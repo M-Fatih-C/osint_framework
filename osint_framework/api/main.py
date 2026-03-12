@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,7 +119,28 @@ async def serve_dashboard():
     template_path = os.path.join(os.path.dirname(__file__), "..", "web", "templates", "dashboard.html")
     try:
         with open(template_path, "r", encoding="utf-8") as f:
-            return f.read()
+            html = f.read()
+
+        asset_files = [
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "templates", "dashboard.html")).resolve(),
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "static", "css", "main.css")).resolve(),
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "static", "js", "api.js")).resolve(),
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "static", "js", "ws.js")).resolve(),
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "static", "js", "graph.js")).resolve(),
+            Path(os.path.join(os.path.dirname(__file__), "..", "web", "static", "js", "app.js")).resolve(),
+        ]
+        existing_assets = [p for p in asset_files if p.exists() and p.is_file()]
+        asset_version = str(int(max(p.stat().st_mtime for p in existing_assets))) if existing_assets else "1"
+
+        html = html.replace("/static/css/main.css", f"/static/css/main.css?v={asset_version}")
+        html = html.replace("/static/js/api.js", f"/static/js/api.js?v={asset_version}")
+        html = html.replace("/static/js/ws.js", f"/static/js/ws.js?v={asset_version}")
+        html = html.replace("/static/js/graph.js", f"/static/js/graph.js?v={asset_version}")
+        html = html.replace("/static/js/app.js", f"/static/js/app.js?v={asset_version}")
+        return HTMLResponse(
+            content=html,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
     except FileNotFoundError:
         return "<h1>Dashboard template not found. Please create web/templates/dashboard.html</h1>"
 
