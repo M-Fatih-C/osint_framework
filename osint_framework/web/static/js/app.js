@@ -15,9 +15,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const createCaseBtn = document.getElementById('createCaseBtn');
     const caseCreateStatus = document.getElementById('caseCreateStatus');
     const casesCountBadge = document.getElementById('casesCountBadge');
+    const formStatus = document.getElementById('formStatus');
     const startBtn = document.getElementById('startBtn');
     const btnSpinner = document.getElementById('btnSpinner');
     const btnText = document.querySelector('.btn-text');
+    const recentScansList = document.getElementById('recentScansList');
+    const workspaceTabs = document.getElementById('workspaceTabs');
+    const workspaceHelper = document.getElementById('workspaceHelper');
+    const workspacePanes = Array.from(document.querySelectorAll('.workspace-pane'));
 
     const displayTarget = document.getElementById('displayTarget');
     const displayJobId = document.getElementById('displayJobId');
@@ -56,6 +61,16 @@ document.addEventListener('DOMContentLoaded', () => {
     let caseList = [];
     let caseDetails = null;
     let caseLoadInFlight = false;
+    let activeWorkspace = 'links';
+    let recentScans = [];
+    const RECENT_SCANS_STORAGE_KEY = 'osint_recent_scans_v2';
+    const MAX_RECENT_SCANS = 12;
+    const WORKSPACE_HELPER_TEXT = {
+        links: 'Review discovered links and pivot quickly.',
+        ai: 'Summarized intelligence for analyst decision support.',
+        case: 'Case context, tracked targets, and recent notes.',
+        debug: 'WebSocket and event-bus telemetry diagnostics.'
+    };
     const eventTelemetry = {
         wsState: 'disconnected',
         queueMode: 'unknown',
@@ -116,6 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     imageInput.setCustomValidity('Please select an image file.');
                     imageInput.reportValidity();
                 }
+                setFormStatus('Please provide a valid target before starting scan.', 'error');
                 return;
             }
 
@@ -132,6 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     targetInput.reportValidity();
                 }
                 logTerminal(`[System] ${validationError}`, "error");
+                setFormStatus(validationError, 'error');
                 return;
             }
             targetInput.setCustomValidity('');
@@ -139,6 +156,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             resetDashboard();
             setLoading(true);
+            setFormStatus('Submitting scan request...', 'info');
             logTerminal(`Initiating scan for ${target} [${type}]...`, "info");
             displayTarget.textContent = target;
 
@@ -160,6 +178,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof res.case_id === 'number') {
                     logTerminal(`[System] Job attached to Case #${res.case_id}.`, "info");
                 }
+                addRecentScan({
+                    jobId: currentJobId,
+                    target,
+                    targetType: type,
+                    caseId: Number.isInteger(res.case_id) ? res.case_id : selectedCaseId,
+                    status: 'running',
+                    createdAt: new Date().toISOString()
+                });
+                setFormStatus(`Job ${trimMiddle(currentJobId, 12)} started successfully.`, 'success');
 
                 progressContainer.classList.remove('hidden');
                 progressFill.style.width = '0%';
@@ -167,7 +194,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 startPolling(currentJobId);
             } catch (err) {
-                logTerminal(`[System] Failed to start scan: ${toFriendlySubmitError(err.message, type)}`, "error");
+                const friendlyError = toFriendlySubmitError(err.message, type);
+                logTerminal(`[System] Failed to start scan: ${friendlyError}`, "error");
+                setFormStatus(`Scan start failed: ${friendlyError}`, 'error');
                 setLoading(false);
             }
         });
@@ -193,13 +222,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
+        initializeWorkspaceTabs();
+        recentScans = loadRecentScans();
+        renderRecentScans();
+        setFormStatus('Ready. Select target type and start scan.', 'info');
         populateTargetTypes();
         applyTargetInputMeta();
         renderEventDebugPanel();
         syncStatusBadges();
-        targetType?.addEventListener('change', applyTargetInputMeta);
-        targetInput?.addEventListener('input', () => targetInput.setCustomValidity(''));
-        imageInput?.addEventListener("change", () => imageInput.setCustomValidity(""));
+        targetType?.addEventListener('change', () => {
+            applyTargetInputMeta();
+            setFormStatus('', '');
+        });
+        targetInput?.addEventListener('input', () => {
+            targetInput.setCustomValidity('');
+            setFormStatus('', '');
+        });
+        targetInput?.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault();
+                scanForm?.requestSubmit();
+            }
+        });
+        imageInput?.addEventListener("change", () => {
+            imageInput.setCustomValidity("");
+            setFormStatus('', '');
+        });
         caseSelect?.addEventListener('change', async () => {
             currentCaseId = getSelectedCaseId();
             setCaseCreateStatus(currentCaseId ? `Selected Case #${currentCaseId}.` : 'No case selected. Scans will run ad-hoc.');
@@ -213,6 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
             await createQuickCase();
         });
         caseTitleInput?.addEventListener('input', () => setCaseCreateStatus(''));
+        recentScansList?.addEventListener('click', handleRecentScansInteraction);
         updateSystemStatus();
         loadCases({ preserveSelection: true }).catch((e) => console.error("Case bootstrap failed", e));
         setInterval(updateSystemStatus, 10000); // Poll every 10s
@@ -227,13 +276,18 @@ document.addEventListener('DOMContentLoaded', () => {
             setWsConnectionState('connected');
             logTerminal('[System] WebSocket Real-Time connection established.', 'success');
             renderEventDebugPanel();
-        } else if (msg.type === 'job_update' && msg.job_id === currentJobId) {
-            logTerminal(`[Scan] Status updated to: ${msg.status}`, 'info');
-            if (msg.error) {
-                logTerminal(`[Scan] Error: ${msg.error}`, 'error');
+        } else if (msg.type === 'job_update') {
+            if (msg.job_id && msg.status) {
+                updateRecentScanStatus(String(msg.job_id), String(msg.status));
             }
-            if (msg.status === 'completed' || msg.status === 'error') {
-                finalizeJob(currentJobId);
+            if (msg.job_id === currentJobId) {
+                logTerminal(`[Scan] Status updated to: ${msg.status}`, 'info');
+                if (msg.error) {
+                    logTerminal(`[Scan] Error: ${msg.error}`, 'error');
+                }
+                if (msg.status === 'completed' || msg.status === 'error') {
+                    finalizeJob(currentJobId);
+                }
             }
         } else if (msg.type === 'module_result' && msg.job_id === currentJobId) {
             logTerminal(`[Module] ${msg.module} completed successfully.`, 'success');
@@ -313,6 +367,9 @@ document.addEventListener('DOMContentLoaded', () => {
         pollInterval = setInterval(async () => {
             try {
                 const res = await ApiService.getJobResult(jobId);
+                if (res?.status) {
+                    updateRecentScanStatus(jobId, String(res.status));
+                }
                 // Sync progress fallback
                 if (res.modules_total > 0) {
                     const done = res.results ? res.results.length : 0;
@@ -348,6 +405,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await ApiService.getJobResult(jobId);
             finalizedJobId = jobId;
+            updateRecentScanStatus(jobId, String(res.status || 'completed'));
             if (typeof res.case_id === 'number') {
                 currentCaseId = res.case_id;
                 syncCaseSelectToCurrentCase();
@@ -372,10 +430,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (res.correlated_intel && res.correlated_intel.summary) {
                 aiContent.innerHTML = res.correlated_intel.summary.replace(/\n/g, '<br>');
+                setFormStatus(`Job ${trimMiddle(jobId, 12)} completed. AI summary ready.`, 'success');
             } else if (res.status === 'error') {
                 aiContent.innerHTML = res.error_message || 'Scan failed before summary generation.';
+                setFormStatus(`Job ${trimMiddle(jobId, 12)} failed.`, 'error');
             } else {
                 aiContent.innerHTML = 'Summary is not available yet. Click "Refresh Summary" to check again.';
+                setFormStatus(`Job ${trimMiddle(jobId, 12)} completed.`, 'success');
             }
 
             // Set up AI Generator click
@@ -406,6 +467,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (e) {
             logTerminal(`[System] Final fetch failed: ${e.message}`, 'error');
+            setFormStatus(`Could not load final result for ${trimMiddle(jobId, 12)}.`, 'error');
         }
     }
 
@@ -427,12 +489,15 @@ document.addEventListener('DOMContentLoaded', () => {
         finalizedJobId = null;
         if (pollInterval) clearInterval(pollInterval);
         progressContainer.classList.add('hidden');
+        progressFill.style.width = '0%';
+        progressText.textContent = '0 / 0 Modules';
         updateCaseContextDisplay();
         if (graph) {
             try { graph.clear(); } catch (e) { console.error(e); }
         }
         generateAiBtn.classList.add('hidden');
         aiContent.innerHTML = 'Run a scan to generate intelligence. Once completed, you can request an AI summary.';
+        setActiveWorkspace('links');
         if (linksContent) {
             linksContent.innerHTML = '<div class="links-empty">Run a scan to collect clickable links from discovered results.</div>';
         }
@@ -440,6 +505,238 @@ document.addEventListener('DOMContentLoaded', () => {
             linksCountBadge.textContent = '0';
             linksCountBadge.classList.add('neutral');
             linksCountBadge.classList.remove('online');
+        }
+    }
+
+    function setFormStatus(message, type = '') {
+        if (!formStatus) return;
+        const fallback = currentCaseId
+            ? `Ready. New scans will attach to Case #${currentCaseId}.`
+            : 'Ready. Select target type and start scan.';
+        formStatus.textContent = message || fallback;
+        formStatus.classList.remove('success', 'error', 'info');
+        if (type) {
+            formStatus.classList.add(type);
+        }
+    }
+
+    function initializeWorkspaceTabs() {
+        if (!workspaceTabs) return;
+        workspaceTabs.addEventListener('click', (event) => {
+            const button = event.target.closest('.workspace-tab');
+            if (!button) return;
+            const workspace = button.getAttribute('data-workspace');
+            if (!workspace) return;
+            setActiveWorkspace(workspace);
+        });
+        setActiveWorkspace(activeWorkspace);
+    }
+
+    function setActiveWorkspace(workspace) {
+        const next = WORKSPACE_HELPER_TEXT[workspace] ? workspace : 'links';
+        activeWorkspace = next;
+
+        workspacePanes.forEach((pane) => {
+            const paneKey = pane.getAttribute('data-workspace') || '';
+            pane.classList.toggle('workspace-hidden', paneKey !== next);
+        });
+
+        if (workspaceTabs) {
+            const tabs = workspaceTabs.querySelectorAll('.workspace-tab');
+            tabs.forEach((tab) => {
+                const tabKey = tab.getAttribute('data-workspace') || '';
+                const active = tabKey === next;
+                tab.classList.toggle('active', active);
+                tab.setAttribute('aria-selected', active ? 'true' : 'false');
+            });
+        }
+
+        if (workspaceHelper) {
+            workspaceHelper.textContent = WORKSPACE_HELPER_TEXT[next] || '';
+        }
+    }
+
+    function handleRecentScansInteraction(event) {
+        const trigger = event.target.closest('[data-action]');
+        if (!trigger) return;
+        const indexRaw = trigger.getAttribute('data-index');
+        const index = Number.parseInt(indexRaw || '', 10);
+        if (!Number.isInteger(index) || index < 0 || index >= recentScans.length) return;
+
+        const item = recentScans[index];
+        const action = trigger.getAttribute('data-action');
+        if (action === 'reuse') {
+            applyRecentScan(item);
+        } else if (action === 'open') {
+            openRecentScanResult(item);
+        }
+    }
+
+    function loadRecentScans() {
+        try {
+            const raw = window.localStorage.getItem(RECENT_SCANS_STORAGE_KEY);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+                .map(normalizeRecentScanItem)
+                .filter(Boolean)
+                .slice(0, MAX_RECENT_SCANS);
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function persistRecentScans() {
+        try {
+            window.localStorage.setItem(RECENT_SCANS_STORAGE_KEY, JSON.stringify(recentScans.slice(0, MAX_RECENT_SCANS)));
+        } catch (_) {
+            // best effort only
+        }
+    }
+
+    function normalizeRecentScanItem(value) {
+        if (!value || typeof value !== 'object') return null;
+        const target = String(value.target || '').trim();
+        const targetType = String(value.targetType || '').trim();
+        const jobId = String(value.jobId || '').trim();
+        if (!target || !targetType) return null;
+        return {
+            target,
+            targetType,
+            jobId: jobId || null,
+            caseId: Number.isInteger(value.caseId) ? value.caseId : null,
+            status: String(value.status || 'submitted'),
+            createdAt: String(value.createdAt || new Date().toISOString())
+        };
+    }
+
+    function addRecentScan(item) {
+        const normalized = normalizeRecentScanItem(item);
+        if (!normalized) return;
+        recentScans = recentScans.filter((existing) => existing.jobId !== normalized.jobId);
+        recentScans.unshift(normalized);
+        if (recentScans.length > MAX_RECENT_SCANS) {
+            recentScans.length = MAX_RECENT_SCANS;
+        }
+        persistRecentScans();
+        renderRecentScans();
+    }
+
+    function updateRecentScanStatus(jobId, status) {
+        if (!jobId) return;
+        const idx = recentScans.findIndex((item) => item.jobId === jobId);
+        if (idx === -1) return;
+        recentScans[idx].status = String(status || recentScans[idx].status || 'unknown');
+        persistRecentScans();
+        renderRecentScans();
+    }
+
+    function renderRecentScans() {
+        if (!recentScansList) return;
+        if (!Array.isArray(recentScans) || recentScans.length === 0) {
+            recentScansList.innerHTML = '<div class="recent-empty">No scans yet. Start your first investigation.</div>';
+            return;
+        }
+
+        recentScansList.innerHTML = recentScans.map((item, index) => {
+            const status = String(item.status || 'submitted').toLowerCase();
+            const statusClass = status === 'completed'
+                ? 'online'
+                : status === 'error'
+                    ? 'error'
+                    : 'neutral';
+            const canOpen = item.jobId ? '' : 'disabled';
+            const caseText = Number.isInteger(item.caseId) ? `Case #${item.caseId}` : 'Ad-hoc';
+            return `
+                <div class="recent-item">
+                    <div class="recent-item-head">
+                        <div class="recent-item-target">${escapeHtml(item.target)}</div>
+                        <span class="badge ${statusClass}">${escapeHtml(status)}</span>
+                    </div>
+                    <div class="recent-item-meta">
+                        <span class="case-chip">${escapeHtml(item.targetType)}</span>
+                        <span class="case-chip">${escapeHtml(caseText)}</span>
+                        <span class="recent-item-time">${escapeHtml(formatRecentTime(item.createdAt))}</span>
+                    </div>
+                    <div class="recent-item-actions">
+                        <span class="recent-job-id">${escapeHtml(item.jobId ? trimMiddle(item.jobId, 20) : 'no job id')}</span>
+                        <div>
+                            <button type="button" class="btn-mini" data-action="reuse" data-index="${index}">Reuse</button>
+                            <button type="button" class="btn-mini" data-action="open" data-index="${index}" ${canOpen}>Open</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function applyRecentScan(item) {
+        if (!item || !targetType) return;
+        targetType.value = item.targetType;
+        applyTargetInputMeta();
+
+        if (item.targetType === 'image') {
+            if (imageInput) {
+                imageInput.value = '';
+            }
+            setFormStatus('Image scans require selecting the file again for browser security.', 'info');
+        } else if (targetInput) {
+            targetInput.value = item.target || '';
+            targetInput.focus();
+            targetInput.setSelectionRange(targetInput.value.length, targetInput.value.length);
+            setFormStatus('Previous target loaded. Review and start new scan.', 'success');
+        }
+
+        if (Number.isInteger(item.caseId)) {
+            currentCaseId = item.caseId;
+            syncCaseSelectToCurrentCase();
+            updateCaseContextDisplay();
+            refreshSelectedCaseDetails({ silent: true }).catch((e) => console.error(e));
+        }
+    }
+
+    function openRecentScanResult(item) {
+        if (!item || !item.jobId) return;
+        currentJobId = item.jobId;
+        finalizedJobId = null;
+        displayTarget.textContent = item.target || '-';
+        displayJobId.textContent = item.jobId;
+
+        if (Number.isInteger(item.caseId)) {
+            currentCaseId = item.caseId;
+            syncCaseSelectToCurrentCase();
+            updateCaseContextDisplay();
+        }
+
+        if (String(item.status).toLowerCase() === 'running') {
+            setLoading(true);
+            progressContainer.classList.remove('hidden');
+            startPolling(item.jobId);
+            setFormStatus(`Tracking running job ${trimMiddle(item.jobId, 12)}...`, 'info');
+            return;
+        }
+
+        setLoading(false);
+        finalizeJob(item.jobId).catch((e) => {
+            console.error(e);
+            setFormStatus(`Could not open job ${trimMiddle(item.jobId || '', 12)}.`, 'error');
+        });
+    }
+
+    function formatRecentTime(value) {
+        if (!value) return '-';
+        try {
+            return new Date(value).toLocaleString([], {
+                year: '2-digit',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+        } catch (_) {
+            return '-';
         }
     }
 
