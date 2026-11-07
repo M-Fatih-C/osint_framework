@@ -151,7 +151,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = "guest"):
     try:
         while True:
             # Keep alive
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, client_id)
 
