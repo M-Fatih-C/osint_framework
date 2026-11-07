@@ -79,6 +79,9 @@ python -m pytest tests -q --disable-socket --allow-unix-socket
 ```
 
 The audit ran 39 existing regressions successfully with external sockets blocked.
+Pytest isolates each case in a temporary SQLite database. A first Linux CI run
+exposed a shared-file database lock between API lifespans; the test fixture avoids
+reusing persisted jobs/locks between independent cases.
 This covers mocks/local persistence, not live providers, distributed recovery
 under production load or calibrated biometric accuracy. The workflow uses the
 same network-restricted tests. No passing badge is asserted.
