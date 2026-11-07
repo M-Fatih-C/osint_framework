@@ -20,5 +20,5 @@ greenlet==3.0.3
 aiosqlite==0.19.0
 opencv-python-headless==4.13.0.92
 # Optional vision identity models (not required for fallback mode)
-retina-face==0.0.17; python_version < "3.12"
+retina-face==0.0.19; python_version < "3.12"
 deepface==0.0.93; python_version < "3.12"
