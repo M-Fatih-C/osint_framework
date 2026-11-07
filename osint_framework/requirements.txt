@@ -11,7 +11,7 @@ PyYAML==6.0.1
 typer==0.9.0
 python-multipart==0.0.6
 jinja2==3.1.6
-websockets==12.0
+websockets==16.1.1
 PyJWT==2.10.1
 dnspython==2.4.2
 python-whois==0.9.4
