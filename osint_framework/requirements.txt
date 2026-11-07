@@ -2,7 +2,7 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.4.2
 pydantic-settings==2.0.3
-SQLAlchemy==2.0.23
+SQLAlchemy==2.0.57
 asyncpg==0.29.0
 alembic==1.12.1
 redis==5.0.1
